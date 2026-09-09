@@ -1,0 +1,4 @@
+# Photo Culler 运行依赖
+Pillow>=10.0
+rawpy>=0.20
+numpy>=1.26
