@@ -91,7 +91,3 @@ PhotoCuller-source/
 python app.py --self-test        # 运行时自检
 python test_smoke.py             # 功能冒烟测试（预览/导航/缩放/保留/筛选）
 ```
-
-## 许可
-
-本项目为反编译重建的源代码，仅用于学习与研究目的。使用前请确认原始软件的许可条款与版权归属。
