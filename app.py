@@ -56,6 +56,7 @@ JPEG_EXTENSIONS = {'.jpg', '.jpeg'}
 JPEG_CACHE_LIMIT = 60
 JPEG_PRELOAD_AHEAD = 20
 JPEG_PRELOAD_BEHIND = 10
+THUMBNAIL_DECODE_SCALE = 2
 PREVIEW_OVERSCAN = 0.72
 PREVIEW_OVERSCAN_MAX_PX = 560
 PREVIEW_INTERACTIVE_DELAY_MS = 24
@@ -163,6 +164,23 @@ def build_photo_groups(paths: list[Path]) -> list[PhotoGroup]:
                 result.append(PhotoGroup(key=str(path.resolve()), primary=path, members=(path,)))
 
     return sorted(result, key=lambda item: item.primary.name.casefold())
+
+
+def scan_photo_paths(folder: Path) -> list[Path]:
+    """List supported photos with one directory enumeration pass.
+
+    ``Path.iterdir()`` followed by ``Path.is_file()`` can issue an additional
+    stat call for every entry. ``os.scandir`` keeps the directory metadata
+    returned by Windows and is cheaper for folders containing many files.
+    """
+    paths = []
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            if Path(entry.name).suffix.casefold() in SUPPORTED_EXTENSIONS:
+                paths.append(Path(entry.path))
+    return sorted(paths, key=lambda path: path.name.casefold())
 
 
 class PhotoCuller(tk.Tk):
@@ -390,10 +408,7 @@ class PhotoCuller(tk.Tk):
             return
         folder = Path(chosen)
         try:
-            paths = sorted(
-                (path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS),
-                key=lambda path: path.name.casefold(),
-            )
+            paths = scan_photo_paths(folder)
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"无法读取这个文件夹：\n{exc}")
             return
@@ -404,7 +419,6 @@ class PhotoCuller(tk.Tk):
         with self._jpeg_cache_lock:
             self.jpeg_cache.clear()
             self._jpeg_tombstones.clear()
-        self._ensure_jpeg_window(self.index)
         saved, saved_pair_modes = self._load_selection()
         current_keys = {item.key for item in self.all_items}
         self.kept = saved.intersection(current_keys)
@@ -552,6 +566,10 @@ class PhotoCuller(tk.Tk):
                     if cached is not None:
                         self.jpeg_cache.move_to_end(key)
                         return cached
+                # A thumbnail should not force a full-resolution JPEG decode.
+                # Use a reduced decode unless the full image is already cached.
+                if thumbnail:
+                    return self._read_raster_image(path, self._thumbnail_decode_size())
                 image = self._read_raster_image(path)
                 with self._jpeg_cache_lock:
                     self.jpeg_cache[key] = image
@@ -560,7 +578,9 @@ class PhotoCuller(tk.Tk):
                         evicted_key, _ = self.jpeg_cache.popitem(last=False)
                         self._jpeg_tombstones.add(evicted_key)
                 return image
-            return self._read_raster_image(path)
+            return self._read_raster_image(
+                path, self._thumbnail_decode_size() if thumbnail else None
+            )
         if rawpy is None:
             raise RuntimeError('DNG 支持组件未安装')
         with rawpy.imread(str(path)) as raw:
@@ -568,17 +588,42 @@ class PhotoCuller(tk.Tk):
                 thumb = raw.extract_thumb()
                 if thumb.format == rawpy.ThumbFormat.JPEG:
                     with io.BytesIO(thumb.data) as embedded:
-                        return ImageOps.exif_transpose(Image.open(embedded)).convert('RGB').copy()
-                return Image.fromarray(thumb.data).convert('RGB')
+                        image = ImageOps.exif_transpose(Image.open(embedded)).convert('RGB')
+                else:
+                    image = Image.fromarray(thumb.data).convert('RGB')
             except Exception:
                 array = raw.postprocess(use_camera_wb=True, no_auto_bright=False, half_size=True, output_bps=8)
-                return Image.fromarray(array).convert('RGB')
+                image = Image.fromarray(array).convert('RGB')
+        if thumbnail:
+            image.thumbnail(self._thumbnail_decode_size(), Image.Resampling.BILINEAR)
+        return image.copy()
+
+    def _thumbnail_decode_size(self):
+        """Return a small decode target with enough pixels for a sharp thumbnail."""
+        return (
+            max(THUMB_WIDTH, self.thumb_width * THUMBNAIL_DECODE_SCALE),
+            max(THUMB_HEIGHT, self.thumb_height * THUMBNAIL_DECODE_SCALE),
+        )
 
     @staticmethod
-    def _read_raster_image(path):
-        """Decode a normal image once and detach it from its file handle."""
+    def _read_raster_image(path, max_size=None):
+        """Decode a normal image and detach it from its file handle.
+
+        For thumbnail reads, Pillow's ``draft`` lets JPEG decoders skip most
+        of the source pixels before decoding. The final ``thumbnail`` call is
+        applied after EXIF orientation so portrait images get the right target
+        dimensions. Full-size reads keep the original pixel data.
+        """
         with Image.open(path) as opened:
+            if max_size is not None:
+                try:
+                    opened.draft('RGB', max_size)
+                except (AttributeError, OSError, ValueError):
+                    # PNG/TIFF and some plugins do not implement draft().
+                    pass
             image = ImageOps.exif_transpose(opened)
+            if max_size is not None:
+                image.thumbnail(max_size, Image.Resampling.BILINEAR)
             return image.convert('RGB').copy()
 
     @staticmethod
@@ -956,7 +1001,12 @@ class PhotoCuller(tk.Tk):
         # Window bounds in *display* (item-list) space.
         lo = max(0, center_index - JPEG_PRELOAD_BEHIND)
         hi = min(len(items) - 1, center_index + JPEG_PRELOAD_AHEAD)
-        window_paths = {path for i, path in jpeg_items if lo <= i <= hi}
+        window_paths = [
+            path for _index, path in sorted(
+                ((i, path) for i, path in jpeg_items if lo <= i <= hi),
+                key=lambda pair: abs(pair[0] - center_index),
+            )
+        ]
         window_keys = {str(p.resolve()) for p in window_paths}
 
         # Invalidate stale generation; start a new one.
