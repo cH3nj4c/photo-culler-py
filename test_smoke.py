@@ -5,7 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, r'G:\photo culler')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PIL import Image
 import app as pc
@@ -26,6 +26,15 @@ assert pair.primary.name == 'DSC_0001.JPG'
 singles = [g for g in groups if not g.paired_raw_jpeg]
 assert all(len(g.members) == 1 for g in singles)
 print('[1] build_photo_groups OK')
+
+# --- 1b. directory scan and reduced thumbnail decode ---
+scanned_names = [path.name for path in pc.scan_photo_paths(tmp)]
+assert scanned_names == ['DSC_0001.DNG', 'DSC_0001.JPG', 'IMG_0002.PNG', 'IMG_0003.TIFF']
+large_path = tmp / 'large.jpg'
+Image.new('RGB', (3200, 2400), 'purple').save(large_path, quality=90)
+small = pc.PhotoCuller._read_raster_image(large_path, (264, 176))
+assert small.width <= 264 and small.height <= 176, small.size
+print('[1b] fast directory scan and reduced decode OK: %s' % (small.size,))
 
 # --- 2. make real test photos ---
 photo_dir = tmp / 'photos'
@@ -73,7 +82,11 @@ def finish():
         app._on_close()
     except Exception:
         pass
-    app.destroy()
+    try:
+        if app.winfo_exists():
+            app.destroy()
+    except tk.TclError:
+        pass
 
 app.after(1600, probe)  # wait for open_folder + preview render + preload
 app.mainloop()
