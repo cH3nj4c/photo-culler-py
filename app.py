@@ -68,23 +68,50 @@ PREVIEW_QUALITY_DELAY_MS = 150
 
 
 def enable_windows_high_dpi() -> None:
-    """Opt out of Windows bitmap scaling so Tk is rendered sharply on HiDPI monitors."""
+    """Opt out of Windows bitmap scaling so Tk is rendered sharply on HiDPI monitors.
+
+    Must be called before any Tk window (or other top-level HWND / COM) is created.
+    Tries, in order of preference:
+      1. Per-Monitor V2    (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)   -> Win10 1703+
+      2. Per-Monitor       (SetProcessDpiAwareness, PM)                   -> Win8.1+
+      3. System            (SetProcessDPIAware, System aware)             -> Win7/Vista
+    Returns True if one of the calls succeeded, False otherwise.
+    """
     if sys.platform != 'win32':
-        return
+        return False
+    user32 = ctypes.windll.user32
+    ctypes.windll.kernel32.SetLastError(0)
+
+    # 1. Per-Monitor V2 — best quality: each monitor scales independently (no blur on mixed-DPI).
     try:
-        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-        return
+        SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext
+        SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+        if SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return True
     except (AttributeError, OSError):
         pass
+
+    # 2. Per-Monitor (pre-Win10) — still no bitmap stretch within each monitor.
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        return
+        SetProcessDpiAwareness = ctypes.windll.shcore.SetProcessDpiAwareness
+        SetProcessDpiAwareness.argtypes = [ctypes.c_int]
+        SetProcessDpiAwareness.restype = ctypes.c_long
+        if SetProcessDpiAwareness(2) == 0:  # PROCESS_PER_MONITOR_DPI_AWARE
+            return True
     except (AttributeError, OSError):
         pass
+
+    # 3. System aware — last resort; avoids the worst bitmap scaling.
     try:
-        ctypes.windll.user32.SetProcessDPIAware()
+        SetProcessDPIAware = user32.SetProcessDPIAware
+        SetProcessDPIAware.restype = ctypes.c_bool
+        if SetProcessDPIAware():
+            return True
     except (AttributeError, OSError):
         pass
+
+    return False
 
 
 @dataclass(frozen=True)
@@ -140,7 +167,10 @@ def build_photo_groups(paths: list[Path]) -> list[PhotoGroup]:
 
 class PhotoCuller(tk.Tk):
     def __init__(self) -> None:
-        # Tk 窗口初始化：先校准 DPI，再建立 UI 与交互状态。
+        # 关键顺序：必须先声明进程级 DPI 感知（Per-Monitor V2），再创建任何 Tk 窗口，
+        # 否则 Windows 会对整个界面做位图拉伸，造成文字/控件模糊、分辨率偏低。
+        enable_windows_high_dpi()
+        # Tk 窗口初始化：再校准 DPI 缩放，最后建立 UI 与交互状态。
         super().__init__()
         self.title(APP_NAME)
         self._configure_dpi_layout()
