@@ -1,7 +1,9 @@
 """Photo Culler - a small Windows-first photo selection application.
 
 The app deliberately copies selected originals on export; it never moves,
-renames, or edits the source photographs.
+renames, or edits the source photographs.  The single exception is the
+explicit delete command, which sends originals to the Windows Recycle Bin
+so a mistaken deletion stays recoverable.
 """
 
 from __future__ import annotations
@@ -65,7 +67,8 @@ PREVIEW_QUALITY_DELAY_MS = 150
 # 应用核心约定：
 # 1. 只读取照片，不移动/重命名源文件；
 # 2. RAW+JPG 可视为同一条“筛选项”，依赖 pair_modes 控制导出策略；
-# 3. 预览和缩略图采用缓存 + 后台线程解码，以保证交互流畅。
+# 3. 预览和缩略图采用缓存 + 后台线程解码，以保证交互流畅；
+# 4. 唯一会触碰源文件的命令是显式删除：整组移入回收站、可恢复、必须二次确认。
 
 
 def enable_windows_high_dpi() -> None:
@@ -113,6 +116,70 @@ def enable_windows_high_dpi() -> None:
         pass
 
     return False
+
+
+# --- Windows 回收站删除 -------------------------------------------------
+# 这是全程序唯一允许移除原始文件的代码路径：走 SHFileOperationW，并带上
+# FOF_ALLOWUNDO，让文件落进回收站而不是被抹掉，误删后仍能找回。
+FO_DELETE = 0x0003
+FOF_NOCONFIRMATION = 0x0010
+FOF_ALLOWUNDO = 0x0040
+FOF_NOERRORUI = 0x0400
+
+
+class _SHFileOpStructW(ctypes.Structure):
+    """Win32 SHFILEOPSTRUCTW，仅用于发起一次回收站删除。"""
+
+    _fields_ = [
+        ('hwnd', ctypes.c_void_p),
+        ('wFunc', ctypes.c_uint),
+        ('pFrom', ctypes.c_void_p),
+        ('pTo', ctypes.c_void_p),
+        ('fFlags', ctypes.c_uint16),
+        ('fAnyOperationsAborted', ctypes.c_int),
+        ('hNameMappings', ctypes.c_void_p),
+        ('lpszProgressTitle', ctypes.c_void_p),
+    ]
+
+
+def send_to_recycle_bin(paths) -> list[tuple[Path, str]]:
+    """Move *paths* to the Recycle Bin and return a (path, reason) list of failures.
+
+    FOF_ALLOWUNDO is what makes the delete undoable.  FOF_NOCONFIRMATION and
+    FOF_NOERRORUI suppress Windows' own dialogs, because the caller already
+    asked the user for confirmation.
+    """
+    targets = [Path(path) for path in paths]
+    if not targets:
+        return []
+    if sys.platform != 'win32':
+        return [(path, '只有 Windows 支持回收站删除') for path in targets]
+
+    failures = [(path, '文件已不存在') for path in targets if not path.exists()]
+    pending = [path for path in targets if path.exists()]
+    if not pending:
+        return failures
+
+    # SHFileOperationW 要求一个以双 NUL 结尾的路径块。
+    source_block = ctypes.create_unicode_buffer('\0'.join(str(path) for path in pending) + '\0')
+    operation = _SHFileOpStructW()
+    operation.wFunc = FO_DELETE
+    operation.pFrom = ctypes.cast(source_block, ctypes.c_void_p)
+    operation.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI
+    shell = ctypes.windll.shell32
+    shell.SHFileOperationW.argtypes = [ctypes.POINTER(_SHFileOpStructW)]
+    shell.SHFileOperationW.restype = ctypes.c_int
+    try:
+        code = shell.SHFileOperationW(ctypes.byref(operation))
+    except OSError as exc:
+        return failures + [(path, str(exc)) for path in pending]
+    if code != 0:
+        failures.extend((path, f'Shell 错误码 {code}') for path in pending)
+    elif operation.fAnyOperationsAborted:
+        failures.extend((path, '操作被系统中断') for path in pending)
+    else:
+        failures.extend((path, '文件仍在原处') for path in pending if path.exists())
+    return failures
 
 
 @dataclass(frozen=True)
@@ -289,6 +356,7 @@ class PhotoCuller(tk.Tk):
         ttk.Button(toolbar, text="全不保留", style="App.TButton", command=self.clear_all_kept).pack(side="right", padx=(0, 6))
         self.keep_mode_button = ttk.Button(toolbar, text="模式：单文件", style="App.TButton", command=self.cycle_keep_mode)
         self.keep_mode_button.pack(side="right", padx=(0, 6))
+        ttk.Button(toolbar, text="删除  Del", style="App.TButton", command=self.delete_current).pack(side="right", padx=(0, 6))
         ttk.Button(toolbar, text="保留 / 取消  Space", style="Keep.TButton", command=self.toggle_keep).pack(side="right", padx=(0, 10))
         ttk.Checkbutton(toolbar, text="只看保留", variable=self.show_kept_only, style="App.TCheckbutton", command=self.toggle_filter).pack(side="right", padx=(0, 16))
 
@@ -309,7 +377,7 @@ class PhotoCuller(tk.Tk):
         self.status_label.pack(side="left")
         self.preload_label = ttk.Label(info, text="", style="Muted.TLabel")
         self.preload_label.pack(side="left", padx=(18, 0))
-        self.help_label = ttk.Label(info, text="[ ] 切换 · Space 保留 · F 模式 · 滚轮缩放 · Z 适合/100% · + − 微调", style="Muted.TLabel")
+        self.help_label = ttk.Label(info, text="[ ] 切换 · Space 保留 · F 模式 · Del 删除 · 滚轮缩放 · Z 适合/100% · + − 微调", style="Muted.TLabel")
         self.help_label.pack(side="right")
 
         thumbs_container = tk.Frame(self, bg="#202329", height=self._px(132))
@@ -334,6 +402,7 @@ class PhotoCuller(tk.Tk):
         self.bind_all("<O>", lambda _event: self.open_folder())
         self.bind_all("<e>", lambda _event: self.export_kept())
         self.bind_all("<E>", lambda _event: self.export_kept())
+        self.bind_all("<Delete>", self._on_delete_key)
         self.bind_all("<z>", lambda _event: self.toggle_zoom())
         self.bind_all("<Z>", lambda _event: self.toggle_zoom())
         self.bind_all("<Key-1>", lambda _event: self.zoom_actual())
@@ -362,6 +431,14 @@ class PhotoCuller(tk.Tk):
 
     def _on_reset_modes_shortcut(self, _event: tk.Event) -> str:
         self.reset_all_pair_modes()
+        return "break"
+
+    def _on_delete_key(self, _event: tk.Event) -> str:
+        widget = _event.widget
+        widget_class = widget.winfo_class() if hasattr(widget, "winfo_class") else ""
+        if widget_class in {"Checkbutton", "TButton", "TCheckbutton", "Button"}:
+            return "break"
+        self.delete_current()
         return "break"
 
     @property
@@ -1229,6 +1306,80 @@ class PhotoCuller(tk.Tk):
         else:
             messagebox.showinfo(APP_NAME, f"已复制 {copied} 张保留照片。")
         self._set_status(self._status_text(self.current_item))
+
+    def delete_current(self):
+        # 唯一会触碰源文件的命令：先问一次，再把整组原件移入回收站。
+        # RAW+JPG 绑定组整组一起删除，这样界面上的“一条筛选项”会整体消失，
+        # 而不是留下一个失去 JPG 预览的孤立 DNG。
+        item = self.current_item
+        if item is None:
+            return
+        victims = list(item.members)
+        target = "RAW+JPG 绑定组" if item.paired_raw_jpeg else item.primary.name
+        preview = "\n".join(f"· {path.name}" for path in victims[:5])
+        if len(victims) > 5:
+            preview += f"\n· …（共 {len(victims)} 个文件）"
+        answer = messagebox.askyesno(
+            APP_NAME,
+            f"将「{target}」移入回收站？\n\n{preview}\n\n"
+            "文件会进入回收站，之后仍可恢复。本组的保留状态和导出模式会一并移除。",
+            icon="warning",
+            default="no",
+        )
+        if not answer:
+            return
+        failures = send_to_recycle_bin(victims)
+        removed = [path for path in victims if not path.exists()]
+        if not removed:
+            messagebox.showerror(
+                APP_NAME,
+                "删除失败，文件仍在原处：\n"
+                + "\n".join(f"{path.name}：{reason}" for path, reason in failures[:3]),
+            )
+            return
+        was_kept = item.key in self.kept
+        self._forget_deleted(item, removed)
+        visible = self.visible_items
+        if visible:
+            self.index = min(self.index, len(visible) - 1)
+            self._show_current(center=True)
+        else:
+            self.index = 0
+            self._show_preview_message("这个文件夹中没有可显示的照片")
+            self._update_keep_mode_ui()
+            self._render_thumbnails()
+        note = f"已移入回收站 {len(removed)} 个文件"
+        if was_kept:
+            note += "（原为保留项，已移出保留集合）"
+        self._set_status(f"{note}    {self._status_text(self.current_item)}")
+        if len(removed) < len(victims):
+            messagebox.showwarning(
+                APP_NAME,
+                f"有 {len(victims) - len(removed)} 个文件未能删除：\n"
+                + "\n".join(f"{path.name}：{reason}" for path, reason in failures[:3]),
+            )
+
+    def _forget_deleted(self, item, removed):
+        # 让被删照片从所有缓存、索引和选片记录里彻底消失。
+        self._cancel_preview_jobs()
+        self._preload_generation += 1  # 阻止仍在跑的预载线程把已删文件塞回缓存
+        removed_keys = {str(path.resolve()) for path in removed}
+        with self._jpeg_cache_lock:
+            for key in removed_keys:
+                self.jpeg_cache.pop(key, None)
+                self._jpeg_tombstones.add(key)
+        with self._preview_levels_lock:
+            for key in [key for key in self._preview_levels if key[0] in removed_keys]:
+                self._preview_levels.pop(key, None)
+        self.thumbnail_cache.clear()  # 缩略图缓存键内嵌可见序号，删除后序号会整体前移
+        self.all_items = [candidate for candidate in self.all_items if candidate.key != item.key]
+        self.kept.discard(item.key)
+        self.pair_modes.pop(item.key, None)
+        if (self.current_source_path is not None
+                and str(self.current_source_path.resolve()) in removed_keys):
+            self.current_source_image = None
+            self.current_source_path = None
+        self._save_selection()
 
     def _selected_members(self, item):
         if not item.paired_raw_jpeg:

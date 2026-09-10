@@ -7,7 +7,8 @@
 - **快速浏览**：`[` / `]` 或点击缩略图栏切换照片，预览图双线程后台渲染，拖动缩放流畅
 - **RAW+JPG 自动绑定**：同一次拍摄的 `DSC_0001.DNG` 与 `DSC_0001.JPG` 自动合并为一个选片项，不再重复显示
 - **保留标记**：`Space` 标记/取消保留，缩略图黄色星号表示已保留；支持"只看保留"筛选
-- **只读原则**：浏览和选片从不修改、移动或重命名原始照片，导出时仅复制
+- **快速删除**：`Del` 把当前组（RAW+JPG 整组）移入 Windows 回收站，可随时还原
+- **只读原则**：浏览和选片从不修改、移动或重命名原始照片；导出仅复制，唯一的例外是删除——它只把文件送进回收站，不做永久删除
 - **RAW 支持**：DNG 优先读取相机内嵌预览，无预览时用 LibRaw 生成屏幕预览
 - **低内存架构**：JPG 采用"墓碑 LRU + 滑动窗口"缓存，只保留当前位置附近的解码图，可打开大型文件夹；缩略图优先按目标尺寸解码
 
@@ -48,6 +49,7 @@ python app.py
 | `[` / `]` | 上一张 / 下一张 |
 | `Space` | 保留 / 取消保留 |
 | `F` | 切换 RAW / JPG 模式 |
+| `Del` | 删除当前组（移入回收站） |
 | `O` | 打开照片文件夹 |
 | `E` | 导出保留照片 |
 | `Z` | 适应窗口 / 100% 实际尺寸 |
@@ -69,8 +71,9 @@ python app.py
 PhotoCuller-source/
 ├── app.py               # 主程序（Tkinter 界面 + 预览渲染管线 + 缓存架构）
 ├── requirements.txt     # 运行依赖
-├── test_smoke.py        # 功能冒烟测试
-└── Photo Culler-实现说明.md  # 原始程序功能实现说明
+├── test_smoke.py        # 功能冒烟测试（预览/导航/缩放/保留/筛选）
+├── test_delete.py       # 删除功能测试（回收站调用 / 单张删除 / 整组删除）
+└── Photo Culler-实现说明.md  # 程序功能实现说明
 ```
 
 ## 技术架构
@@ -81,6 +84,7 @@ PhotoCuller-source/
 - **目录读取**：使用 `os.scandir` 单次枚举第一层文件，减少大量照片目录中的额外 stat 调用
 - **缩略图读取**：只为可见范围生成 Tk 小图；JPEG 使用 Pillow `draft()` 先降采样再解码，LRU 缓存上限 110 张
 - **RAW 解码**：rawpy `extract_thumb()` 优先，`postprocess(half_size=True)` 兜底
+- **删除**：Windows Shell `SHFileOperationW` + `FOF_ALLOWUNDO` 移入回收站，整组删除，删除前二次确认
 
 详见 [Photo Culler-实现说明.md](Photo%20Culler-%E5%AE%9E%E7%8E%B0%E8%AF%B4%E6%98%8E.md)。
 
@@ -89,4 +93,5 @@ PhotoCuller-source/
 ```bash
 python app.py --self-test        # 运行时自检
 python test_smoke.py             # 功能冒烟测试（预览/导航/缩放/保留/筛选）
+python test_delete.py            # 删除功能测试（回收站调用/单张删除/整组删除）
 ```
