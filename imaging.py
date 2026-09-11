@@ -68,8 +68,12 @@ def read_dng_image(path: Path, thumbnail_size: tuple[int, int] | None = None) ->
     return image.copy()
 
 
-def fit_long_edge(image: Image.Image, long_edge: int) -> Image.Image:
-    """Return a copy scaled so the long edge is at most *long_edge*."""
+def fit_long_edge(image: Image.Image, long_edge: int, resample=None) -> Image.Image:
+    """Return a copy scaled so the long edge is at most *long_edge*.
+
+    Downscale uses BILINEAR by default — much cheaper than LANCZOS and enough
+    for the preview cache (100% inspect still loads full pixels).
+    """
     if long_edge <= 0:
         return image
     current = max(image.width, image.height)
@@ -80,7 +84,9 @@ def fit_long_edge(image: Image.Image, long_edge: int) -> Image.Image:
         max(1, round(image.width * scale)),
         max(1, round(image.height * scale)),
     )
-    return image.resize(size, Image.Resampling.LANCZOS)
+    if resample is None:
+        resample = Image.Resampling.BILINEAR
+    return image.resize(size, resample)
 
 
 def decode_preview_photo(
@@ -89,13 +95,21 @@ def decode_preview_photo(
 ) -> tuple[Image.Image, tuple[int, int]]:
     """Decode a photo for the preview cache.
 
-    Returns ``(preview_image, original_size)``. The preview is downscaled to
-    *long_edge*; ``original_size`` is the pre-downscale pixel size so zoom/fit
-    stay relative to true camera pixels.
+    Returns ``(preview_image, original_size)``. JPEG uses Pillow ``draft`` so
+    most source pixels are skipped before decode; ``original_size`` is the
+    oriented full-resolution size used for zoom/fit math.
     """
-    image = decode_photo(path, thumbnail=False)
-    original_size = image.size
-    return fit_long_edge(image, long_edge), original_size
+    original_size = read_oriented_size(path)
+    if path.suffix.lower() == ".dng":
+        full = read_dng_image(path)
+        return downsample_to_edge(full, long_edge), original_size
+    # draft() + BILINEAR thumbnail — avoids full decode + LANCZOS.
+    preview = read_raster_image(
+        path, (long_edge, long_edge) if long_edge > 0 else None
+    )
+    if max(preview.size) > long_edge > 0:
+        preview = downsample_to_edge(preview, long_edge)
+    return preview, original_size
 
 
 def decode_photo(
@@ -117,7 +131,7 @@ def fit_for_display(
     if scale >= 1.0:
         return image
     size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
-    return image.resize(size, Image.Resampling.LANCZOS)
+    return image.resize(size, Image.Resampling.BILINEAR)
 
 
 def read_oriented_size(path: Path) -> tuple[int, int]:
@@ -140,28 +154,3 @@ def downsample_to_edge(image: Image.Image, max_edge: int) -> Image.Image:
     clone = image.copy()
     clone.thumbnail((max_edge, max_edge), Image.Resampling.BILINEAR)
     return clone
-
-
-def decode_preview_jpeg(path: Path, max_edge: int) -> tuple[Image.Image, int, int]:
-    """Fast reduced decode for the sliding window.
-
-    Returns ``(preview_image, original_width, original_height)``.
-    JPEG uses Pillow ``draft`` so most source pixels are skipped.
-    """
-    orig_w, orig_h = read_oriented_size(path)
-    preview = read_raster_image(path, (max_edge, max_edge) if max_edge > 0 else None)
-    return preview, orig_w, orig_h
-
-
-def decode_full_with_preview(
-    path: Path, max_edge: int
-) -> tuple[Image.Image, Image.Image, int, int]:
-    """Decode full pixels once and derive a preview copy.
-
-    Returns ``(full_image, preview_image, original_width, original_height)``.
-    """
-    if path.suffix.lower() == ".dng":
-        full = read_dng_image(path)
-        return full, downsample_to_edge(full, max_edge), full.width, full.height
-    full = read_raster_image(path)
-    return full, downsample_to_edge(full, max_edge), full.width, full.height

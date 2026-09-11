@@ -216,13 +216,24 @@ class PreviewEngine:
             max(1, math.ceil(image.width / factor)),
             max(1, math.ceil(image.height / factor)),
         )
-        level = image.resize(
-            size,
-            Image.Resampling.BILINEAR if interactive else Image.Resampling.LANCZOS,
-        )
+        # Pyramid levels are an intermediate; always BILINEAR.
+        level = image.resize(size, Image.Resampling.BILINEAR)
         with self._levels_lock:
             self._levels.setdefault(key, level)
         return level
+
+    @staticmethod
+    def _resample_for(src_size: tuple[int, int], target_size: tuple[int, int], interactive: bool) -> int:
+        """LANCZOS only for mild shrink / enlarge; heavy downscale uses BILINEAR."""
+        if interactive:
+            return Image.Resampling.BILINEAR
+        src_w, src_h = src_size
+        if src_w <= 0 or src_h <= 0:
+            return Image.Resampling.BILINEAR
+        scale = min(target_size[0] / src_w, target_size[1] / src_h)
+        if scale >= 0.5:
+            return Image.Resampling.LANCZOS
+        return Image.Resampling.BILINEAR
 
     def _build_frame(
         self,
@@ -234,10 +245,8 @@ class PreviewEngine:
         source = self._source_for(image, path_id, geometry.downsample_factor, interactive)
         crop = source.crop(geometry.source_box)
         if crop.size != geometry.target_size:
-            crop = crop.resize(
-                geometry.target_size,
-                Image.Resampling.BILINEAR if interactive else Image.Resampling.LANCZOS,
-            )
+            resample = self._resample_for(crop.size, geometry.target_size, interactive)
+            crop = crop.resize(geometry.target_size, resample)
         return crop
 
     def drain_latest(self) -> tuple | None:
