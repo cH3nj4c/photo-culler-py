@@ -69,22 +69,38 @@ python app.py
 
 ```
 PhotoCuller-source/
-├── app.py               # 主程序（Tkinter 界面 + 预览渲染管线 + 缓存架构）
-├── requirements.txt     # 运行依赖
-├── test_smoke.py        # 功能冒烟测试（预览/导航/缩放/保留/筛选）
-├── test_delete.py       # 删除功能测试（回收站调用 / 单张删除 / 整组删除）
-└── Photo Culler-实现说明.md  # 程序功能实现说明
+├── app.py                    # 入口（配置打包 Tcl/Tk 后启动 UI）
+├── photoculler/
+│   ├── config.py             # 共享常量
+│   ├── domain.py             # PhotoGroup / 分组 / 导出成员规划（无 Tk 依赖）
+│   ├── imaging.py            # 图片解码（JPG/PNG/TIFF/DNG）
+│   ├── winshell.py           # HiDPI 与回收站删除
+│   ├── selection_store.py    # 选片记录持久化（%LOCALAPPDATA%）
+│   ├── jpeg_preloader.py     # JPEG LRU + 滑动窗口预载（单 worker）
+│   ├── image_loader.py       # 全分辨率后台解码
+│   ├── preview_engine.py     # 预览几何 + 双帧后台渲染
+│   ├── export_service.py     # 后台导出（进度 / Esc 取消）
+│   ├── workers.py            # latest-wins 单线程 worker
+│   └── ui.py                 # Tkinter 界面层
+├── requirements.txt
+├── test_smoke.py             # 功能冒烟测试
+├── test_delete.py            # 删除功能测试
+└── Photo Culler-实现说明.md
 ```
 
 ## 技术架构
 
-- **UI**：Tkinter / ttk，主线程只负责绘制
-- **预览渲染**：2 线程后台池，双帧合并（降采样交互帧 + 全分辨率质量帧）
-- **JPG 缓存**：`OrderedDict` LRU（上限 60 张）+ 墓碑标记 + 导航滑动窗口预载，替代原始全量预载以降低内存占用
-- **目录读取**：使用 `os.scandir` 单次枚举第一层文件，减少大量照片目录中的额外 stat 调用
-- **缩略图读取**：只为可见范围生成 Tk 小图；JPEG 使用 Pillow `draft()` 先降采样再解码，LRU 缓存上限 110 张
+- **分层**：`domain` / services（解码、缓存、导出、回收站）与 `ui` 分离，领域逻辑可不依赖 Tk 测试
+- **UI**：Tkinter / ttk；主线程只负责绘制与事件，不再同步解码全图或拷贝导出文件
+- **预览渲染**：2 线程后台池，双帧合并（降采样交互帧 + 全分辨率质量帧），generation 丢弃过期帧
+- **当前图解码**：后台线程池完成；JPEG 命中滑动窗口缓存时直接复用
+- **JPG 缓存**：线程安全 LRU（上限 60 张）+ 导航滑动窗口预载；单 worker，快速翻页会替换未开始的任务而不是堆线程
+- **导出**：后台拷贝，状态栏显示进度，导出中按 `Esc` 可取消
+- **目录读取**：`os.scandir` 单次枚举第一层文件
+- **缩略图**：只为可见范围生成；JPEG 用 `draft()` 降采样解码；缓存键为路径身份 + mtime（不含显示序号）
 - **RAW 解码**：rawpy `extract_thumb()` 优先，`postprocess(half_size=True)` 兜底
-- **删除**：Windows Shell `SHFileOperationW` + `FOF_ALLOWUNDO` 移入回收站，整组删除，删除前二次确认
+- **删除**：`SHFileOperationW` + `FOF_ALLOWUNDO` 整组移入回收站，删除前二次确认
+- **选片记录**：`%LOCALAPPDATA%\PhotoCuller\selections\<hash>.json`，保存失败会在状态栏提示
 
 详见 [Photo Culler-实现说明.md](Photo%20Culler-%E5%AE%9E%E7%8E%B0%E8%AF%B4%E6%98%8E.md)。
 
