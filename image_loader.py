@@ -63,7 +63,7 @@ class ImageLoader:
     ) -> None:
         try:
             if full_resolution:
-                image = decode_photo(path, thumbnail=False)
+                image = decode_photo(path, thumbnail=False, full_resolution=True)
                 original_size = image.size
             else:
                 image, original_size = decode_preview_photo(path)

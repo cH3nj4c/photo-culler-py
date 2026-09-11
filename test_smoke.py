@@ -2,6 +2,7 @@
 and verify the preview/thumbnail pipelines run end to end."""
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -119,6 +120,25 @@ prev, orig_size = decode_preview_photo(large_path)
 assert max(prev.size) <= PREVIEW_CACHE_LONG_EDGE
 assert orig_size == (3200, 2400), orig_size
 print("[1f] preview downscale OK:", prev.size, "orig", orig_size)
+
+# --- 1g. async thumbnail service ---
+from thumbnail_service import ThumbnailService
+
+thumb_svc = ThumbnailService()
+assert thumb_svc.request(("k", 1), large_path, 132, 88) is True
+assert thumb_svc.request(("k", 1), large_path, 132, 88) is False  # already pending/done key
+got = []
+for _ in range(80):
+    got = thumb_svc.drain()
+    if got:
+        break
+    time.sleep(0.02)
+assert got, "thumbnail service produced no event"
+key, img, err = got[0]
+assert err is None and img is not None
+assert img.width <= 132 and img.height <= 88
+thumb_svc.shutdown()
+print("[1g] async thumbnail service OK")
 
 # --- 2. make real test photos ---
 photo_dir = tmp / "photos"

@@ -32,7 +32,6 @@ from domain import (
 )
 from export_service import ExportService
 from image_loader import ImageLoader
-from imaging import decode_photo, fit_for_display, thumbnail_decode_size
 from jpeg_preloader import JpegCache, JpegPreloader
 from preview_engine import (
     PreviewEngine,
@@ -41,6 +40,7 @@ from preview_engine import (
 )
 from selection_store import load_selection, save_selection
 from sysmem import describe_cache_plan, recommend_jpeg_cache_limit
+from thumbnail_service import ThumbnailService
 from winshell import enable_windows_high_dpi, send_to_recycle_bin
 
 
@@ -93,6 +93,7 @@ class PhotoCuller(tk.Tk):
         self.preview_engine = PreviewEngine()
         self.image_loader = ImageLoader(self.jpeg_cache)
         self.export_service = ExportService()
+        self.thumbnail_service = ThumbnailService()
         self._export_active = False
 
         self.thumbnail_cache = {}
@@ -366,6 +367,7 @@ class PhotoCuller(tk.Tk):
         self.preview_engine.clear_levels()
         self.preloader.invalidate()
         self.jpeg_cache.clear()
+        self.thumbnail_service.cancel_pending()
         cache_limit = self.jpeg_cache.retune_from_system_memory()
         self.thumbnail_cache.clear()
         self._status_note = ""
@@ -767,6 +769,7 @@ class PhotoCuller(tk.Tk):
             self._handle_preview_events()
             self._handle_preload_events()
             self._handle_export_events()
+            self._handle_thumbnail_events()
         finally:
             if self.winfo_exists():
                 self._poll_job = self.after(PREVIEW_POLL_MS, self._poll_services)
@@ -1110,7 +1113,20 @@ class PhotoCuller(tk.Tk):
             )
             try:
                 photo = self._thumbnail(item)
-                self.thumb_canvas.create_image(x, self._px(57), image=photo)
+                if photo is not None:
+                    self.thumb_canvas.create_image(x, self._px(57), image=photo)
+                else:
+                    self.thumb_canvas.create_rectangle(
+                        x - self.thumb_width // 2,
+                        self._px(57) - self.thumb_height // 2,
+                        x + self.thumb_width // 2,
+                        self._px(57) + self.thumb_height // 2,
+                        fill="#2a2e36",
+                        outline="#3a404c",
+                    )
+                    self.thumb_canvas.create_text(
+                        x, self._px(57), text="…", fill="#8a909a", font=("Segoe UI", 12)
+                    )
             except Exception:
                 self.thumb_canvas.create_text(
                     x, self._px(57), text="无法预览", fill="#aab0ba", font=("Segoe UI", 9)
@@ -1146,35 +1162,32 @@ class PhotoCuller(tk.Tk):
             )
 
     def _thumbnail(self, item: PhotoGroup):
+        """Return a cached PhotoImage, or queue a background decode and return None."""
         path = item.primary
-        # mtime comes from the directory scan — no per-paint stat().
         cache_key = (item.primary_id, item.primary_mtime_ns)
         cached = self.thumbnail_cache.get(cache_key)
         if cached is not None:
             return cached
-        image = decode_photo(
-            path, thumbnail=True, thumb_size=thumbnail_decode_size(
-                self.thumb_width, self.thumb_height
-            )
+        # PIL decode happens off-thread; PhotoImage is created when the event lands.
+        self.thumbnail_service.request(
+            cache_key, path, self.thumb_width, self.thumb_height
         )
-        image = fit_for_display(image, self.thumb_width, self.thumb_height)
-        if image.width < self.thumb_width and image.height < self.thumb_height:
-            background = Image.new(
-                "RGB", (self.thumb_width, self.thumb_height), "#202329"
-            )
-            background.paste(
-                image,
-                (
-                    (self.thumb_width - image.width) // 2,
-                    (self.thumb_height - image.height) // 2,
-                ),
-            )
-            image = background
-        photo = ImageTk.PhotoImage(image)
-        self.thumbnail_cache[cache_key] = photo
-        while len(self.thumbnail_cache) > THUMB_CACHE_LIMIT:
-            self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
-        return photo
+        return None
+
+    def _handle_thumbnail_events(self) -> None:
+        if not self.thumbnail_service.events.empty():
+            events = self.thumbnail_service.drain()
+            applied = False
+            for cache_key, image, error in events:
+                if image is None:
+                    continue
+                photo = ImageTk.PhotoImage(image)
+                self.thumbnail_cache[cache_key] = photo
+                while len(self.thumbnail_cache) > THUMB_CACHE_LIMIT:
+                    self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
+                applied = True
+            if applied:
+                self._render_thumbnails(center=False)
 
     def _thumbnail_clicked(self, event):
         items = self.visible_items
@@ -1284,6 +1297,7 @@ class PhotoCuller(tk.Tk):
         self._cancel_ui_render_jobs()
         self.image_loader.cancel_pending()
         self.preloader.invalidate()
+        self.thumbnail_service.cancel_pending()
 
         removed_ids = {str(path.resolve()) for path in removed}
         # Always drop the old primary from caches; membership uses removed_ids only.
@@ -1368,6 +1382,7 @@ class PhotoCuller(tk.Tk):
         self.preloader.invalidate()
         self.image_loader.cancel_pending()
         self.preview_engine.cancel_all()
+        self.thumbnail_service.cancel_pending()
         self._cancel_ui_render_jobs()
         if getattr(self, "_poll_job", None) is not None:
             try:
@@ -1378,6 +1393,7 @@ class PhotoCuller(tk.Tk):
         self.image_loader.shutdown()
         self.preloader.close()
         self.export_service.close()
+        self.thumbnail_service.shutdown()
         self.destroy()
 
 

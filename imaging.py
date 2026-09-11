@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from PIL import Image, ImageOps, UnidentifiedImageError  # noqa: F401  (re-export)
+from PIL import Image, ImageOps
 
 from config import (
     PREVIEW_CACHE_LONG_EDGE,
@@ -63,27 +63,50 @@ def read_raster_image(
 
 
 def read_dng_image(
-    path: Path, thumbnail_size: tuple[int, int] | None = None
+    path: Path,
+    thumbnail_size: tuple[int, int] | None = None,
+    full_resolution: bool = False,
 ) -> tuple[Image.Image, tuple[int, int]]:
+    """Decode DNG for display.
+
+    ``original_size`` is the processed (``iwidth``/``iheight``) sensor output
+    size, not the embedded JPEG thumb — so 100% zoom can request a true full
+    postprocess when ``full_resolution=True``.
+    """
     if rawpy is None:
         raise RuntimeError("DNG 支持组件未安装")
     with rawpy.imread(str(path)) as raw:
+        try:
+            original_size = (int(raw.sizes.iwidth), int(raw.sizes.iheight))
+        except Exception:
+            original_size = None
+
+        if full_resolution:
+            # True full pixels for 100% inspect (memory/CPU heavy by design).
+            array = raw.postprocess(
+                use_camera_wb=True, no_auto_bright=False, half_size=False, output_bps=8
+            )
+            image = Image.fromarray(array).convert("RGB")
+            if original_size is None:
+                original_size = image.size
+            return image.copy(), original_size
+
         try:
             thumb = raw.extract_thumb()
             if thumb.format == rawpy.ThumbFormat.JPEG:
                 with io.BytesIO(thumb.data) as embedded:
                     with Image.open(embedded) as thumb_im:
-                        original_size = _oriented_size_from_open(thumb_im)
                         image = ImageOps.exif_transpose(thumb_im).convert("RGB")
             else:
                 image = Image.fromarray(thumb.data).convert("RGB")
-                original_size = image.size
         except Exception:
             array = raw.postprocess(
                 use_camera_wb=True, no_auto_bright=False, half_size=True, output_bps=8
             )
             image = Image.fromarray(array).convert("RGB")
-            original_size = image.size
+
+    if original_size is None:
+        original_size = image.size
     if thumbnail_size is not None:
         image.thumbnail(thumbnail_size, Image.Resampling.BILINEAR)
     return image.copy(), original_size
@@ -135,10 +158,15 @@ def decode_photo(
     path: Path,
     thumbnail: bool = False,
     thumb_size: tuple[int, int] | None = None,
+    full_resolution: bool = False,
 ) -> Image.Image:
     suffix = path.suffix.lower()
     if suffix == ".dng":
-        image, _size = read_dng_image(path, thumb_size if thumbnail else None)
+        image, _size = read_dng_image(
+            path,
+            thumb_size if thumbnail else None,
+            full_resolution=full_resolution,
+        )
         return image
     image, _size = read_raster_image(path, thumb_size if thumbnail else None)
     return image
@@ -153,12 +181,6 @@ def fit_for_display(
         return image
     size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
     return image.resize(size, Image.Resampling.BILINEAR)
-
-
-def read_oriented_size(path: Path) -> tuple[int, int]:
-    """Original pixel size after EXIF orientation, without decoding pixels."""
-    with Image.open(path) as opened:
-        return _oriented_size_from_open(opened)
 
 
 def downsample_to_edge(image: Image.Image, max_edge: int) -> Image.Image:
