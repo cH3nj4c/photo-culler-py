@@ -42,5 +42,6 @@ class LatestOnlyWorker:
             try:
                 fn(generation, *args, **kwargs)
             except Exception:
-                # Workers must not die on a single decode failure; UI surfaces errors via events.
+                # Job functions are expected to emit their own terminal events.
+                # Swallowing here keeps the worker thread alive for the next job.
                 pass

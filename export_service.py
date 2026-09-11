@@ -52,17 +52,25 @@ class ExportService:
         copied = 0
         failures: list[str] = []
         total = len(sources)
-        for source in sources:
-            if self._cancel_requested or generation != self._generation:
-                self.events.put((generation, copied, total, failures, True, True))
-                return
-            try:
-                target = unique_destination(destination, source.name)
-                shutil.copy2(source, target)
-                copied += 1
-            except OSError as exc:
-                failures.append(f"{source.name}: {exc}")
-            self.events.put((generation, copied, total, failures, False, False))
+        try:
+            for source in sources:
+                if self._cancel_requested or generation != self._generation:
+                    self.events.put((generation, copied, total, failures, True, True))
+                    return
+                try:
+                    target = unique_destination(destination, source.name)
+                    shutil.copy2(source, target)
+                    copied += 1
+                except OSError as exc:
+                    failures.append(f"{source.name}: {exc}")
+                except Exception as exc:
+                    failures.append(f"{source.name}: {exc}")
+                self.events.put((generation, copied, total, failures, False, False))
+        except Exception as exc:
+            # Always emit a terminal event so the UI cannot stick on "exporting".
+            failures.append(f"导出中断：{exc}")
+            self.events.put((generation, copied, total, failures, True, False))
+            return
         self.events.put((generation, copied, total, failures, True, False))
 
     def close(self) -> None:

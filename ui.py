@@ -285,7 +285,8 @@ class PhotoCuller(tk.Tk):
         if self._export_active:
             self.export_service.cancel()
             self._set_status("正在取消导出…")
-        return "break"
+            return "break"
+        return ""
 
     # --- session state ---------------------------------------------------
 
@@ -411,6 +412,12 @@ class PhotoCuller(tk.Tk):
         self._save_selection()
         if self.show_kept_only.get():
             self._ensure_index()
+            if not self.visible_items:
+                self._show_preview_message("没有保留的照片")
+                self._set_status("保留 0 张照片")
+                self._update_keep_mode_ui()
+                self._render_thumbnails()
+                return
         self._show_current(center=False, reset_zoom=False)
 
     def cycle_keep_mode(self) -> None:
@@ -920,7 +927,8 @@ class PhotoCuller(tk.Tk):
     # --- thumbnails / preload --------------------------------------------
 
     def _ensure_jpeg_window(self, center_index: int) -> None:
-        label = self.preloader.request_window(self.all_items, center_index)
+        # center_index is a visible_items index; preload must use the same list.
+        label = self.preloader.request_window(self.visible_items, center_index)
         if label:
             self.preload_label.configure(text=label)
         else:
@@ -1101,7 +1109,13 @@ class PhotoCuller(tk.Tk):
             )
             return
         was_kept = item.key in self.kept
-        self._forget_deleted(item, removed)
+        was_mode = self.pair_modes.get(item.key)
+        successor = self._forget_deleted(item, removed)
+        if successor is not None and was_kept:
+            self.kept.add(successor.key)
+            if successor.paired_raw_jpeg and was_mode:
+                self.pair_modes[successor.key] = normalize_pair_mode(was_mode)
+            self._save_selection()
         self._ensure_index()
         visible = self.visible_items
         if visible:
@@ -1112,8 +1126,10 @@ class PhotoCuller(tk.Tk):
             self._update_keep_mode_ui()
             self._render_thumbnails()
         note = f"已移入回收站 {len(removed)} 个文件"
-        if was_kept:
+        if was_kept and successor is None:
             note += "（原为保留项，已移出保留集合）"
+        elif was_kept and successor is not None:
+            note += "（保留状态已转移到剩余文件）"
         self._set_status(f"{note}    {self._status_text(self.current_item)}")
         if len(removed) < len(victims):
             messagebox.showwarning(
@@ -1122,33 +1138,66 @@ class PhotoCuller(tk.Tk):
                 + "\n".join(f"{path.name}：{reason}" for path, reason in failures[:3]),
             )
 
-    def _forget_deleted(self, item: PhotoGroup, removed: list[Path]) -> None:
+    def _forget_deleted(self, item: PhotoGroup, removed: list[Path]) -> PhotoGroup | None:
+        """Drop deleted members from caches and session state.
+
+        If some members of a group survived, rebuild them as new group(s) in place
+        so orphan files do not vanish from the UI. Returns the sole successor group
+        when exactly one remains, else None.
+        """
         self.preview_engine.cancel_all()
         self._cancel_ui_render_jobs()
         self.image_loader.cancel_pending()
         self.preloader.invalidate()
 
         removed_ids = {str(path.resolve()) for path in removed}
-        removed_ids.add(item.primary_id)
-        for path_id in removed_ids:
+        # Always drop the old primary from caches; membership uses removed_ids only.
+        cache_ids = set(removed_ids)
+        cache_ids.add(item.primary_id)
+        for path_id in cache_ids:
             self.jpeg_cache.pop(path_id)
             self.preview_engine.drop_levels_for(path_id)
             for key in [k for k in self.thumbnail_cache if k[0] == path_id]:
                 self.thumbnail_cache.pop(key, None)
 
-        self.all_items = [c for c in self.all_items if c.key != item.key]
+        remaining_paths = [
+            path for path in item.members if str(path.resolve()) not in removed_ids
+        ]
         self.kept.discard(item.key)
         self.pair_modes.pop(item.key, None)
-        self._invalidate_visible()
-        if self.current_source_id in removed_ids or (
+
+        source_gone = self.current_source_id in removed_ids or (
             self.current_source_path is not None
             and str(self.current_source_path.resolve()) in removed_ids
-        ):
+        )
+
+        if not remaining_paths:
+            self.all_items = [c for c in self.all_items if c.key != item.key]
+            self._invalidate_visible()
+            if source_gone:
+                self.current_source_image = None
+                self.current_source_path = None
+                self.current_source_id = None
+                self._loading_path_id = None
+            self._save_selection()
+            return None
+
+        rebuilt = build_photo_groups(remaining_paths)
+        new_items: list[PhotoGroup] = []
+        for candidate in self.all_items:
+            if candidate.key == item.key:
+                new_items.extend(rebuilt)
+            else:
+                new_items.append(candidate)
+        self.all_items = new_items
+        self._invalidate_visible()
+        if source_gone:
             self.current_source_image = None
             self.current_source_path = None
             self.current_source_id = None
             self._loading_path_id = None
         self._save_selection()
+        return rebuilt[0] if len(rebuilt) == 1 else None
 
     # --- status / shutdown -----------------------------------------------
 

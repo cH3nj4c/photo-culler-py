@@ -119,7 +119,13 @@ class JpegPreloader:
         for number, item in enumerate(items, start=1):
             if generation != self._generation:
                 return
-            image = read_raster_image(item.primary)
+            try:
+                image = read_raster_image(item.primary)
+            except Exception:
+                # One corrupt file must not kill the whole preload window.
+                if number == 1 or number == total or number % 10 == 0:
+                    self.events.put((generation, number, total, False))
+                continue
             if generation != self._generation:
                 return
             self.cache.put(item.primary_id, image)

@@ -50,6 +50,31 @@ kept, modes = load_selection(sel_dir)
 assert kept == {"k1", "k2"} and modes == {"k1": "jpg"}
 print("[1c] selection store OK")
 
+# --- 1d. partial-pair rebuild + visible filter ---
+from domain import filter_visible_items
+
+pair_dir = tmp / "pair_logic"
+pair_dir.mkdir()
+dng = pair_dir / "DSC_0100.DNG"
+jpg = pair_dir / "DSC_0100.JPG"
+dng.write_bytes(b"raw")
+jpg.write_bytes(b"jpg")
+other = pair_dir / "OTHER.JPG"
+other.write_bytes(b"x")
+groups = pc.build_photo_groups([dng, jpg, other])
+pair = next(g for g in groups if g.paired_raw_jpeg)
+assert pair.members == (dng, jpg) or set(pair.members) == {dng, jpg}
+# Simulate DNG deleted, JPG remains → rebuild as a single item
+rebuilt = pc.build_photo_groups([jpg])
+assert len(rebuilt) == 1 and not rebuilt[0].paired_raw_jpeg
+assert rebuilt[0].primary == jpg
+kept_set = {rebuilt[0].key}
+visible = filter_visible_items(rebuilt, kept_set, show_kept_only=True)
+assert visible == [], "kept items must hide under 只看保留"
+visible_all = filter_visible_items(rebuilt, set(), show_kept_only=False)
+assert len(visible_all) == 1
+print("[1d] partial rebuild + filter OK")
+
 # --- 2. make real test photos ---
 photo_dir = tmp / "photos"
 photo_dir.mkdir()

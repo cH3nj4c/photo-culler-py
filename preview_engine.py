@@ -6,7 +6,6 @@ import math
 import queue
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Lock
 
 from PIL import Image

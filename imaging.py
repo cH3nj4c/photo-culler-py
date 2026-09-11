@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError  # noqa: F401  (re-export)
 
-from config import JPEG_EXTENSIONS, THUMB_HEIGHT, THUMB_WIDTH, THUMBNAIL_DECODE_SCALE
+from config import THUMB_HEIGHT, THUMB_WIDTH, THUMBNAIL_DECODE_SCALE
 
 try:
     import rawpy
@@ -83,7 +83,3 @@ def fit_for_display(
         return image
     size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
     return image.resize(size, Image.Resampling.LANCZOS)
-
-
-def is_jpeg_path(path: Path) -> bool:
-    return path.suffix.lower() in JPEG_EXTENSIONS
