@@ -75,11 +75,12 @@ PhotoCuller-source/
 ├── imaging.py                # 图片解码（JPG/PNG/TIFF/DNG）
 ├── winshell.py               # HiDPI 与回收站删除
 ├── selection_store.py        # 选片记录持久化（%LOCALAPPDATA%）
-├── jpeg_preloader.py         # JPEG LRU + 滑动窗口预载（单 worker）
-├── image_loader.py           # 全分辨率后台解码
-├── preview_engine.py         # 预览几何 + 双帧后台渲染
+├── jpeg_preloader.py         # JPEG 预览 LRU + 滑动窗口预载（单 worker）
+├── image_loader.py           # 后台解码（预览尺寸 / 全分辨率）
+├── preview_engine.py         # 预览几何 + 双帧后台渲染（zoom 相对原图像素）
 ├── export_service.py         # 后台导出（进度 / Esc 取消）
 ├── workers.py                # latest-wins 单线程 worker
+├── sysmem.py                 # 物理内存探测 + 自适应缓存上限
 ├── ui.py                     # Tkinter 界面层
 ├── requirements.txt
 ├── test_smoke.py             # 功能冒烟测试
@@ -93,13 +94,15 @@ PhotoCuller-source/
 - **UI**：Tkinter / ttk；主线程只负责绘制与事件，不再同步解码全图或拷贝导出文件
 - **预览渲染**：2 线程后台池，双帧合并（降采样交互帧 + 全分辨率质量帧），generation 丢弃过期帧
 - **当前图解码**：后台线程池完成；JPEG 命中滑动窗口缓存时直接复用
-- **JPG 缓存**：线程安全 LRU（上限 60 张）+ 导航滑动窗口预载；单 worker，快速翻页会替换未开始的任务而不是堆线程
+- **JPG 缓存**：只缓存**预览尺寸**（长边 ≤2560）解码图，数量按系统总内存/空闲内存自适应（约 6–60 张）；快速翻页单 worker latest-wins
+- **100% 检视**：缩放超过适合窗口或按 `1` 时再按需读入全分辨率原图，回到适合窗口会释放全图
 - **导出**：后台拷贝，状态栏显示进度，导出中按 `Esc` 可取消
 - **目录读取**：`os.scandir` 单次枚举第一层文件
 - **缩略图**：只为可见范围生成；JPEG 用 `draft()` 降采样解码；缓存键为路径身份 + mtime（不含显示序号）
 - **RAW 解码**：rawpy `extract_thumb()` 优先，`postprocess(half_size=True)` 兜底
-- **删除**：`SHFileOperationW` + `FOF_ALLOWUNDO` 整组移入回收站，删除前二次确认
+- **删除**：`SHFileOperationW` + `FOF_ALLOWUNDO` 整组移入回收站，删除前二次确认；部分失败时保留剩余成员
 - **选片记录**：`%LOCALAPPDATA%\PhotoCuller\selections\<hash>.json`，保存失败会在状态栏提示
+- **内存探测**：`sysmem.py` 通过 `GlobalMemoryStatusEx` 读取物理内存，打开文件夹时重算缓存上限
 
 详见 [Photo Culler-实现说明.md](Photo%20Culler-%E5%AE%9E%E7%8E%B0%E8%AF%B4%E6%98%8E.md)。
 

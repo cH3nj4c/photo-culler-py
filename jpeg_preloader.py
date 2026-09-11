@@ -1,36 +1,59 @@
-"""Sliding-window JPEG cache with a single latest-wins preload worker."""
+"""Sliding-window JPEG preview cache with a single latest-wins preload worker."""
 
 from __future__ import annotations
 
 import queue
 from collections import OrderedDict
-from pathlib import Path
 from threading import Lock
+from typing import NamedTuple
 
-from config import JPEG_CACHE_LIMIT, JPEG_PRELOAD_AHEAD, JPEG_PRELOAD_BEHIND
+from config import JPEG_PRELOAD_AHEAD, JPEG_PRELOAD_BEHIND
 from domain import PhotoGroup
-from imaging import read_raster_image
+from imaging import decode_preview_photo
+from sysmem import recommend_jpeg_cache_limit
 from workers import LatestOnlyWorker
 
 
+class PreviewCacheEntry(NamedTuple):
+    image: object  # PIL Image
+    original_size: tuple[int, int]
+
+
 class JpegCache:
-    """Thread-safe LRU of full-resolution decoded JPEGs, keyed by resolved path."""
+    """Thread-safe LRU of *preview-sized* decoded JPEGs, keyed by resolved path."""
 
-    def __init__(self, limit: int = JPEG_CACHE_LIMIT) -> None:
-        self._limit = limit
+    def __init__(self, limit: int | None = None) -> None:
+        self._limit = limit if limit is not None else recommend_jpeg_cache_limit()
         self._lock = Lock()
-        self._data: OrderedDict[str, object] = OrderedDict()
+        self._data: OrderedDict[str, PreviewCacheEntry] = OrderedDict()
 
-    def get(self, key: str):
+    @property
+    def limit(self) -> int:
         with self._lock:
-            image = self._data.get(key)
-            if image is not None:
+            return self._limit
+
+    def set_limit(self, limit: int) -> None:
+        with self._lock:
+            self._limit = max(1, int(limit))
+            while len(self._data) > self._limit:
+                self._data.popitem(last=False)
+
+    def retune_from_system_memory(self) -> int:
+        """Recompute the slot count from current free RAM."""
+        limit = recommend_jpeg_cache_limit()
+        self.set_limit(limit)
+        return limit
+
+    def get(self, key: str) -> PreviewCacheEntry | None:
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is not None:
                 self._data.move_to_end(key)
-            return image
+            return entry
 
-    def put(self, key: str, image) -> None:
+    def put(self, key: str, image, original_size: tuple[int, int]) -> None:
         with self._lock:
-            self._data[key] = image
+            self._data[key] = PreviewCacheEntry(image, original_size)
             self._data.move_to_end(key)
             while len(self._data) > self._limit:
                 self._data.popitem(last=False)
@@ -53,7 +76,7 @@ class JpegCache:
 
 
 class JpegPreloader:
-    """Keep a sliding window of JPEGs decoded around the current index.
+    """Keep a sliding window of preview JPEGs decoded around the current index.
 
     One worker thread owns decoding. Rapid navigation replaces the pending job
     instead of spawning additional threads.
@@ -120,7 +143,7 @@ class JpegPreloader:
             if generation != self._generation:
                 return
             try:
-                image = read_raster_image(item.primary)
+                image, original_size = decode_preview_photo(item.primary)
             except Exception:
                 # One corrupt file must not kill the whole preload window.
                 if number == 1 or number == total or number % 10 == 0:
@@ -128,7 +151,7 @@ class JpegPreloader:
                 continue
             if generation != self._generation:
                 return
-            self.cache.put(item.primary_id, image)
+            self.cache.put(item.primary_id, image, original_size)
             if number == 1 or number == total or number % 10 == 0:
                 self.events.put((generation, number, total, False))
         self.events.put((generation, total, total, True))

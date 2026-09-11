@@ -1,4 +1,4 @@
-"""Off-UI-thread full-resolution photo loading with a small worker pool."""
+"""Off-UI-thread photo loading with preview vs full-resolution modes."""
 
 from __future__ import annotations
 
@@ -6,18 +6,17 @@ import queue
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
-from PIL import Image
-
-from jpeg_preloader import JpegCache
-from imaging import decode_photo
+from jpeg_preloader import JpegCache, PreviewCacheEntry
+from imaging import decode_photo, decode_preview_photo
 
 
 class ImageLoader:
     """Decode source photos away from the Tk event loop.
 
-    Callers submit a path and receive ``(generation, path_id, image|None, error|None)``
-    on ``events``. Generation numbers let the UI drop results for photos the user
-    already navigated past.
+    * Preview loads feed the sliding-window JPEG cache (downscaled) and report
+      ``(generation, path_id, image, original_size, error, full_flag)``.
+    * Full loads are for 100% / zoomed inspection of the *current* photo only
+      and are never written into the preview cache.
     """
 
     def __init__(self, jpeg_cache: JpegCache, max_workers: int = 2) -> None:
@@ -43,29 +42,38 @@ class ImageLoader:
             future.cancel()
         self._futures = {f for f in self._futures if not f.done()}
 
-    def try_cached(self, path_id: str) -> Image.Image | None:
-        cached = self.jpeg_cache.get(path_id)
-        return cached if isinstance(cached, Image.Image) else None
+    def try_cached(self, path_id: str) -> PreviewCacheEntry | None:
+        return self.jpeg_cache.get(path_id)
 
-    def submit(self, path: Path, path_id: str) -> int:
+    def submit(self, path: Path, path_id: str, full_resolution: bool = False) -> int:
+        """Queue a decode."""
         self.bump_generation()
         generation = self._generation
         for future in self._futures:
             future.cancel()
         self._futures = {f for f in self._futures if not f.done()}
-        future = self._executor.submit(self._decode, generation, path, path_id)
+        future = self._executor.submit(
+            self._decode, generation, path, path_id, full_resolution
+        )
         self._futures.add(future)
         return generation
 
-    def _decode(self, generation: int, path: Path, path_id: str) -> None:
+    def _decode(
+        self, generation: int, path: Path, path_id: str, full_resolution: bool
+    ) -> None:
         try:
-            image = decode_photo(path, thumbnail=False)
-            # Cache only JPEGs; other formats stay on-demand to bound memory.
-            if path.suffix.lower() in {".jpg", ".jpeg"}:
-                self.jpeg_cache.put(path_id, image)
-            self.events.put((generation, path_id, image, None))
+            if full_resolution:
+                image = decode_photo(path, thumbnail=False)
+                original_size = image.size
+            else:
+                image, original_size = decode_preview_photo(path)
+                if path.suffix.lower() in {".jpg", ".jpeg"}:
+                    self.jpeg_cache.put(path_id, image, original_size)
+            self.events.put(
+                (generation, path_id, image, original_size, None, full_resolution)
+            )
         except Exception as exc:
-            self.events.put((generation, path_id, None, exc))
+            self.events.put((generation, path_id, None, None, exc, full_resolution))
 
     def drain_latest(self) -> tuple | None:
         newest = None

@@ -75,6 +75,47 @@ visible_all = filter_visible_items(rebuilt, set(), show_kept_only=False)
 assert len(visible_all) == 1
 print("[1d] partial rebuild + filter OK")
 
+# --- 1e. adaptive JPEG cache from free RAM ---
+from sysmem import (
+    JPEG_CACHE_LIMIT_MAX,
+    JPEG_CACHE_LIMIT_MIN,
+    MemoryInfo,
+    get_memory_info,
+    recommend_jpeg_cache_limit,
+)
+
+info = get_memory_info()
+assert info.total_bytes > 0 and info.avail_bytes > 0, info
+# Plenty of free RAM → cap at max
+assert recommend_jpeg_cache_limit(32 * 1024**3, 16 * 1024**3) == JPEG_CACHE_LIMIT_MAX
+# Very tight free RAM → floor at min
+tight = recommend_jpeg_cache_limit(8 * 1024**3, 40 * 1024 * 1024)
+assert tight == JPEG_CACHE_LIMIT_MIN, tight
+# Mid range sits between min and max
+mid = recommend_jpeg_cache_limit(16 * 1024**3, 2 * 1024**3)
+assert JPEG_CACHE_LIMIT_MIN <= mid <= JPEG_CACHE_LIMIT_MAX, mid
+from jpeg_preloader import JpegCache
+
+cache = JpegCache(mid)
+assert cache.limit == mid
+cache.set_limit(3)
+assert cache.limit >= 1  # set_limit floors at 1
+print("[1e] adaptive cache plan OK: live_limit=%s mid=%s tight=%s" % (
+    recommend_jpeg_cache_limit(), mid, tight))
+
+# --- 1f. preview downscale helper ---
+from imaging import decode_preview_photo, fit_long_edge
+from config import PREVIEW_CACHE_LONG_EDGE
+
+big = Image.new("RGB", (5000, 3000), "white")
+small = fit_long_edge(big, PREVIEW_CACHE_LONG_EDGE)
+assert max(small.size) == PREVIEW_CACHE_LONG_EDGE
+assert max(fit_long_edge(Image.new("RGB", (800, 600)), PREVIEW_CACHE_LONG_EDGE).size) == 800
+prev, orig_size = decode_preview_photo(large_path)
+assert max(prev.size) <= PREVIEW_CACHE_LONG_EDGE
+assert orig_size == (3200, 2400), orig_size
+print("[1f] preview downscale OK:", prev.size, "orig", orig_size)
+
 # --- 2. make real test photos ---
 photo_dir = tmp / "photos"
 photo_dir.mkdir()

@@ -37,6 +37,8 @@ def interactive_downsample_factor(image: Image.Image, zoom_scale: float) -> int:
 
 def compute_geometry(
     image: Image.Image,
+    original_width: int,
+    original_height: int,
     canvas_width: int,
     canvas_height: int,
     zoom_scale: float,
@@ -49,10 +51,15 @@ def compute_geometry(
 ) -> tuple[PreviewGeometry, float, float, float, float]:
     """Return (geometry, new_fit, new_zoom, new_pan_x, new_pan_y).
 
-    View-state updates are returned so the caller can persist them once.
+    ``zoom_scale`` / ``fit_scale`` are relative to *original* pixels. ``image``
+    may be a downsampled preview; source boxes are returned in image pixels.
     """
+    orig_w = max(1, original_width)
+    orig_h = max(1, original_height)
+    downsample = orig_w / max(1, image.width)
+
     was_at_fit = abs(zoom_scale - previous_fit) < 0.0001
-    new_fit = min(canvas_width / image.width, canvas_height / image.height, 1.0)
+    new_fit = min(canvas_width / orig_w, canvas_height / orig_h, 1.0)
     if reset_zoom or was_at_fit:
         new_zoom = new_fit
         new_pan_x = 0.0
@@ -60,20 +67,27 @@ def compute_geometry(
     else:
         new_zoom = min(4.0, zoom_scale)
         new_pan_x, new_pan_y = _constrain_pan(
-            image, new_zoom, canvas_width, canvas_height, pan_x, pan_y
+            orig_w, orig_h, new_zoom, canvas_width, canvas_height, pan_x, pan_y
         )
 
-    display_width = image.width * new_zoom
-    display_height = image.height * new_zoom
+    display_width = orig_w * new_zoom
+    display_height = orig_h * new_zoom
     left = canvas_width / 2 + new_pan_x - display_width / 2
     top = canvas_height / 2 + new_pan_y - display_height / 2
     overscan = min(
         max(canvas_width, canvas_height) * PREVIEW_OVERSCAN, PREVIEW_OVERSCAN_MAX_PX
     )
-    source_left = max(0, math.floor((-overscan - left) / new_zoom))
-    source_top = max(0, math.floor((-overscan - top) / new_zoom))
-    source_right = min(image.width, math.ceil((canvas_width + overscan - left) / new_zoom))
-    source_bottom = min(image.height, math.ceil((canvas_height + overscan - top) / new_zoom))
+    # Visible region in original-pixel coordinates.
+    src_left_o = max(0.0, (-overscan - left) / new_zoom)
+    src_top_o = max(0.0, (-overscan - top) / new_zoom)
+    src_right_o = min(float(orig_w), (canvas_width + overscan - left) / new_zoom)
+    src_bottom_o = min(float(orig_h), (canvas_height + overscan - top) / new_zoom)
+
+    # Map into the (possibly downsampled) image pixel grid.
+    source_left = max(0, int(src_left_o / downsample))
+    source_top = max(0, int(src_top_o / downsample))
+    source_right = min(image.width, int(math.ceil(src_right_o / downsample)))
+    source_bottom = min(image.height, int(math.ceil(src_bottom_o / downsample)))
     if source_right <= source_left or source_bottom <= source_top:
         raise RuntimeError("无法显示这个缩放区域")
 
@@ -85,14 +99,17 @@ def compute_geometry(
     if level_right <= level_left or level_bottom <= level_top:
         raise RuntimeError("无法显示这个缩放区域")
 
-    target_width = max(1, round((level_right - level_left) * new_zoom * factor))
-    target_height = max(1, round((level_bottom - level_top) * new_zoom * factor))
+    # Canvas pixels = original display size * zoom; source crop is in level pixels.
+    # Scale from level pixels → original pixels → canvas.
+    level_to_canvas = downsample * factor * new_zoom
+    target_width = max(1, round((level_right - level_left) * level_to_canvas))
+    target_height = max(1, round((level_bottom - level_top) * level_to_canvas))
     geometry = PreviewGeometry(
         source_box=(level_left, level_top, level_right, level_bottom),
         target_size=(target_width, target_height),
         origin=(
-            left + level_left * factor * new_zoom,
-            top + level_top * factor * new_zoom,
+            left + (level_left * factor * downsample) * new_zoom,
+            top + (level_top * factor * downsample) * new_zoom,
         ),
         downsample_factor=factor,
     )
@@ -100,15 +117,16 @@ def compute_geometry(
 
 
 def _constrain_pan(
-    image: Image.Image,
+    orig_w: int,
+    orig_h: int,
     zoom_scale: float,
     canvas_width: int,
     canvas_height: int,
     pan_x: float,
     pan_y: float,
 ) -> tuple[float, float]:
-    display_width = image.width * zoom_scale
-    display_height = image.height * zoom_scale
+    display_width = orig_w * zoom_scale
+    display_height = orig_h * zoom_scale
     max_x = max(0.0, (display_width - canvas_width) / 2)
     max_y = max(0.0, (display_height - canvas_height) / 2)
     return max(-max_x, min(max_x, pan_x)), max(-max_y, min(max_y, pan_y))
@@ -251,11 +269,12 @@ class PreviewEngine:
 
 
 def constrain_pan(
-    image: Image.Image,
+    orig_w: int,
+    orig_h: int,
     zoom_scale: float,
     canvas_width: int,
     canvas_height: int,
     pan_x: float,
     pan_y: float,
 ) -> tuple[float, float]:
-    return _constrain_pan(image, zoom_scale, canvas_width, canvas_height, pan_x, pan_y)
+    return _constrain_pan(orig_w, orig_h, zoom_scale, canvas_width, canvas_height, pan_x, pan_y)

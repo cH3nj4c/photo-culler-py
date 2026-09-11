@@ -11,6 +11,7 @@ from PIL import Image, ImageTk
 
 from config import (
     APP_NAME,
+    PREVIEW_CACHE_LONG_EDGE,
     PREVIEW_INTERACTIVE_DELAY_MS,
     PREVIEW_POLL_MS,
     PREVIEW_QUALITY_DELAY_MS,
@@ -39,6 +40,7 @@ from preview_engine import (
     constrain_pan,
 )
 from selection_store import load_selection, save_selection
+from sysmem import describe_cache_plan, recommend_jpeg_cache_limit
 from winshell import enable_windows_high_dpi, send_to_recycle_bin
 
 
@@ -68,6 +70,12 @@ class PhotoCuller(tk.Tk):
         self.current_source_image = None
         self.current_source_path: Path | None = None
         self.current_source_id: str | None = None
+        self._preview_source_image = None
+        self._full_source_image = None
+        self._original_size: tuple[int, int] = (1, 1)
+        self._using_full_resolution = False
+        self._pending_full_zoom: str | None = None  # 'actual' | 'scale'
+        self._pending_full_scale: float | None = None
         self.zoom_scale = 1.0
         self.fit_scale = 1.0
         self.pan_x = 0.0
@@ -77,9 +85,10 @@ class PhotoCuller(tk.Tk):
         self._quality_render_job = None
         self._pending_reset_zoom = True
         self._loading_path_id: str | None = None
+        self._loading_full_path_id: str | None = None
 
         # Background services.
-        self.jpeg_cache = JpegCache()
+        self.jpeg_cache = JpegCache(recommend_jpeg_cache_limit())
         self.preloader = JpegPreloader(self.jpeg_cache)
         self.preview_engine = PreviewEngine()
         self.image_loader = ImageLoader(self.jpeg_cache)
@@ -357,6 +366,7 @@ class PhotoCuller(tk.Tk):
         self.preview_engine.clear_levels()
         self.preloader.invalidate()
         self.jpeg_cache.clear()
+        cache_limit = self.jpeg_cache.retune_from_system_memory()
         self.thumbnail_cache.clear()
         self._status_note = ""
 
@@ -367,6 +377,12 @@ class PhotoCuller(tk.Tk):
         self.current_source_image = None
         self.current_source_path = None
         self.current_source_id = None
+        self._preview_source_image = None
+        self._full_source_image = None
+        self._original_size = (1, 1)
+        self._using_full_resolution = False
+        self._pending_full_zoom = None
+        self._loading_full_path_id = None
 
         saved, saved_pair_modes = load_selection(folder)
         current_keys = {item.key for item in self.all_items}
@@ -382,7 +398,9 @@ class PhotoCuller(tk.Tk):
 
         if not self.all_items:
             self._show_preview_message("这个文件夹中没有受支持的照片")
-            self._set_status("支持 JPG、JPEG、PNG、TIFF、DNG")
+            self._set_status(
+                f"支持 JPG、JPEG、PNG、TIFF、DNG    {describe_cache_plan(cache_limit)}"
+            )
             self._update_keep_mode_ui()
             self._render_thumbnails()
             return
@@ -517,29 +535,98 @@ class PhotoCuller(tk.Tk):
 
         cached = self.image_loader.try_cached(path_id)
         if cached is not None:
-            self._adopt_source_image(path, path_id, cached)
+            self._adopt_preview_image(path, path_id, cached.image, cached.original_size)
             self._pending_reset_zoom = reset_zoom
             self._render_preview_now(interactive=True)
             self._schedule_preview_render(interactive=False, quality_delay=90)
             self._set_status(self._status_text(item))
             return
 
-        # Decode off the UI thread.
+        # Decode a preview-sized frame off the UI thread (full-res comes later on zoom).
         self.current_source_image = None
         self.current_source_path = path
         self.current_source_id = path_id
+        self._preview_source_image = None
+        self._full_source_image = None
+        self._using_full_resolution = False
+        self._pending_full_zoom = None
         self._loading_path_id = path_id
+        self._loading_full_path_id = None
         self._pending_reset_zoom = reset_zoom
         self._show_preview_message(f"正在载入\n{path.name}")
-        self.image_loader.submit(path, path_id)
+        self.image_loader.submit(path, path_id, full_resolution=False)
 
-    def _adopt_source_image(self, path: Path, path_id: str, image) -> None:
+    def _adopt_preview_image(
+        self, path: Path, path_id: str, image, original_size: tuple[int, int]
+    ) -> None:
         if self.current_source_id != path_id:
             self.preview_engine.clear_levels()
+        self._preview_source_image = image
+        self._full_source_image = None
+        self._original_size = original_size
+        self._using_full_resolution = False
         self.current_source_image = image
         self.current_source_path = path
         self.current_source_id = path_id
         self._loading_path_id = None
+        self._loading_full_path_id = None
+
+    def _adopt_full_image(self, path: Path, path_id: str, image) -> None:
+        # Full image has different pixel grid; drop preview pyramid levels.
+        self.preview_engine.clear_levels()
+        self._full_source_image = image
+        self._original_size = image.size
+        self._using_full_resolution = True
+        self.current_source_image = image
+        self.current_source_path = path
+        self.current_source_id = path_id
+        self._loading_path_id = None
+        self._loading_full_path_id = None
+
+    def _release_full_image(self) -> None:
+        """Drop the full-res working copy when returning to fit/preview mode."""
+        if self._full_source_image is None:
+            return
+        self._full_source_image = None
+        self._using_full_resolution = False
+        if self._preview_source_image is not None:
+            self.preview_engine.clear_levels()
+            self.current_source_image = self._preview_source_image
+
+    def _needs_full_resolution(self) -> bool:
+        if self.current_source_image is None:
+            return False
+        if self._using_full_resolution and self._full_source_image is not None:
+            return False
+        orig_w, orig_h = self._original_size
+        # Preview decode leaves small originals untouched — already full pixels.
+        if max(orig_w, orig_h) <= PREVIEW_CACHE_LONG_EDGE:
+            return False
+        return True
+
+    def _request_full_resolution(self, after: str, scale: float | None = None) -> None:
+        """Load original pixels for the current photo, then continue the zoom action."""
+        path = self.current_source_path
+        path_id = self.current_source_id
+        if path is None or path_id is None:
+            return
+        if self._loading_full_path_id == path_id and self._pending_full_zoom:
+            return
+        self._pending_full_zoom = after
+        self._pending_full_scale = scale
+        self._loading_full_path_id = path_id
+        self._set_status(f"正在载入原图以检视：{path.name}")
+        self.image_loader.submit(path, path_id, full_resolution=True)
+
+    def _original_dims(self) -> tuple[int, int]:
+        orig_w, orig_h = self._original_size
+        return max(1, orig_w), max(1, orig_h)
+
+    def _fit_scale_for_canvas(self) -> float:
+        orig_w, orig_h = self._original_dims()
+        canvas_width = max(self.preview_canvas.winfo_width(), 1)
+        canvas_height = max(self.preview_canvas.winfo_height(), 1)
+        return min(canvas_width / orig_w, canvas_height / orig_h, 1.0)
 
     def _render_preview_now(self, interactive: bool) -> None:
         image = self.current_source_image
@@ -564,8 +651,11 @@ class PhotoCuller(tk.Tk):
             raise RuntimeError("没有可显示的照片")
         canvas_width = max(self.preview_canvas.winfo_width(), 1)
         canvas_height = max(self.preview_canvas.winfo_height(), 1)
+        orig_w, orig_h = self._original_size
         return compute_geometry(
             image=image,
+            original_width=orig_w,
+            original_height=orig_h,
             canvas_width=canvas_width,
             canvas_height=canvas_height,
             zoom_scale=self.zoom_scale,
@@ -682,22 +772,51 @@ class PhotoCuller(tk.Tk):
         event = self.image_loader.drain_latest()
         if event is None:
             return
-        generation, path_id, image, error = event
+        generation, path_id, image, original_size, error, full_flag = event
         if generation != self.image_loader.generation:
             return
         if path_id != self.current_source_id and path_id != self._loading_path_id:
-            return
+            if not (full_flag and path_id == self._loading_full_path_id):
+                return
         if error is not None or image is None:
             path = self.current_source_path
             name = path.name if path is not None else path_id
-            self.current_source_image = None
-            self.current_source_path = None
-            self.current_source_id = None
-            self._loading_path_id = None
+            if full_flag:
+                self._loading_full_path_id = None
+                self._pending_full_zoom = None
+                self._set_status(f"无法载入原图\n{name}\n\n{error}")
+                return
+            self._clear_current_source()
             self._show_preview_message(f"无法显示\n{name}\n\n{error}")
             self._update_keep_mode_ui()
             return
-        self._adopt_source_image(self.current_source_path or Path(path_id), path_id, image)
+
+        path = self.current_source_path or Path(path_id)
+        if full_flag:
+            self._adopt_full_image(path, path_id, image)
+            self.preview_image_item = None
+            self.preview_canvas.delete("all")
+            action = self._pending_full_zoom
+            scale = self._pending_full_scale
+            self._pending_full_zoom = None
+            self._pending_full_scale = None
+            # zoom_scale is always relative to original pixels, so the requested
+            # numeric scale remains valid after swapping in the full-resolution image.
+            if action == "actual":
+                self.zoom_scale = 1.0
+                self.pan_x = 0.0
+                self.pan_y = 0.0
+            elif action == "scale" and scale is not None:
+                self.zoom_scale = max(self.fit_scale, min(4.0, scale))
+            else:
+                self.zoom_scale = max(self.fit_scale, 1.0)
+            self._pending_reset_zoom = False
+            self._render_preview_now(interactive=True)
+            self._schedule_preview_render(interactive=False, quality_delay=90)
+            self._set_status(self._status_text(self.current_item))
+            return
+
+        self._adopt_preview_image(path, path_id, image, original_size or image.size)
         self.preview_image_item = None  # message canvas may still be showing
         self.preview_canvas.delete("all")
         self._render_preview_now(interactive=True)
@@ -764,13 +883,14 @@ class PhotoCuller(tk.Tk):
     # --- zoom / pan ------------------------------------------------------
 
     def _constrain_pan_now(self) -> None:
-        image = self.current_source_image
-        if image is None:
+        if self.current_source_image is None:
             return
+        orig_w, orig_h = self._original_dims()
         canvas_width = max(self.preview_canvas.winfo_width(), 1)
         canvas_height = max(self.preview_canvas.winfo_height(), 1)
         self.pan_x, self.pan_y = constrain_pan(
-            image, self.zoom_scale, canvas_width, canvas_height, self.pan_x, self.pan_y
+            orig_w, orig_h, self.zoom_scale, canvas_width, canvas_height,
+            self.pan_x, self.pan_y,
         )
 
     def _update_zoom_label(self):
@@ -784,9 +904,14 @@ class PhotoCuller(tk.Tk):
         self.zoom_label.configure(text=f"{percent}%")
 
     def _set_zoom(self, scale, anchor):
-        image = self.current_source_image
-        if image is None:
+        if self.current_source_image is None:
             return
+        # Zooming past fit needs original pixels for a sharp 100% inspect.
+        if scale > self.fit_scale + 0.05 and self._needs_full_resolution():
+            self._request_full_resolution(after="scale", scale=scale)
+            return
+        image = self.current_source_image
+        orig_w, orig_h = self._original_dims()
         canvas_width = max(self.preview_canvas.winfo_width(), 1)
         canvas_height = max(self.preview_canvas.winfo_height(), 1)
         self._constrain_pan_now()
@@ -796,15 +921,15 @@ class PhotoCuller(tk.Tk):
             return
         if anchor is not None:
             anchor_x, anchor_y = anchor
-            old_left = canvas_width / 2 + self.pan_x - image.width * old_scale / 2
-            old_top = canvas_height / 2 + self.pan_y - image.height * old_scale / 2
-            source_x = max(0.0, min(float(image.width), (anchor_x - old_left) / old_scale))
-            source_y = max(0.0, min(float(image.height), (anchor_y - old_top) / old_scale))
+            old_left = canvas_width / 2 + self.pan_x - orig_w * old_scale / 2
+            old_top = canvas_height / 2 + self.pan_y - orig_h * old_scale / 2
+            source_x = max(0.0, min(float(orig_w), (anchor_x - old_left) / old_scale))
+            source_y = max(0.0, min(float(orig_h), (anchor_y - old_top) / old_scale))
             self.pan_x = (
-                anchor_x - source_x * new_scale - canvas_width / 2 + image.width * new_scale / 2
+                anchor_x - source_x * new_scale - canvas_width / 2 + orig_w * new_scale / 2
             )
             self.pan_y = (
-                anchor_y - source_y * new_scale - canvas_height / 2 + image.height * new_scale / 2
+                anchor_y - source_y * new_scale - canvas_height / 2 + orig_h * new_scale / 2
             )
         self.zoom_scale = new_scale
         self._pending_reset_zoom = False
@@ -813,6 +938,10 @@ class PhotoCuller(tk.Tk):
     def zoom_fit(self):
         if self.current_source_image is None:
             return
+        self._release_full_image()
+        if self.current_source_image is None:
+            return
+        self.fit_scale = self._fit_scale_for_canvas()
         self.zoom_scale = self.fit_scale
         self.pan_x = 0.0
         self.pan_y = 0.0
@@ -822,8 +951,14 @@ class PhotoCuller(tk.Tk):
         self._schedule_preview_render(interactive=False, quality_delay=80)
 
     def zoom_actual(self):
+        if self.current_source_image is None and self.current_source_path is None:
+            return
+        if self._needs_full_resolution():
+            self._request_full_resolution(after="actual")
+            return
         if self.current_source_image is None:
             return
+        self.fit_scale = self._fit_scale_for_canvas()
         self.zoom_scale = max(self.fit_scale, 1.0)
         self.pan_x = 0.0
         self.pan_y = 0.0
@@ -1175,10 +1310,7 @@ class PhotoCuller(tk.Tk):
             self.all_items = [c for c in self.all_items if c.key != item.key]
             self._invalidate_visible()
             if source_gone:
-                self.current_source_image = None
-                self.current_source_path = None
-                self.current_source_id = None
-                self._loading_path_id = None
+                self._clear_current_source()
             self._save_selection()
             return None
 
@@ -1192,12 +1324,22 @@ class PhotoCuller(tk.Tk):
         self.all_items = new_items
         self._invalidate_visible()
         if source_gone:
-            self.current_source_image = None
-            self.current_source_path = None
-            self.current_source_id = None
-            self._loading_path_id = None
+            self._clear_current_source()
         self._save_selection()
         return rebuilt[0] if len(rebuilt) == 1 else None
+
+    def _clear_current_source(self) -> None:
+        self.current_source_image = None
+        self.current_source_path = None
+        self.current_source_id = None
+        self._preview_source_image = None
+        self._full_source_image = None
+        self._original_size = (1, 1)
+        self._using_full_resolution = False
+        self._loading_path_id = None
+        self._loading_full_path_id = None
+        self._pending_full_zoom = None
+        self._pending_full_scale = None
 
     # --- status / shutdown -----------------------------------------------
 
