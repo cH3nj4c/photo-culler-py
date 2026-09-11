@@ -7,10 +7,10 @@ from collections import OrderedDict
 from pathlib import Path
 from threading import Lock
 
-from .config import JPEG_CACHE_LIMIT, JPEG_PRELOAD_AHEAD, JPEG_PRELOAD_BEHIND
-from .domain import PhotoGroup
-from .imaging import read_raster_image
-from .workers import LatestOnlyWorker
+from config import JPEG_CACHE_LIMIT, JPEG_PRELOAD_AHEAD, JPEG_PRELOAD_BEHIND
+from domain import PhotoGroup
+from imaging import read_raster_image
+from workers import LatestOnlyWorker
 
 
 class JpegCache:

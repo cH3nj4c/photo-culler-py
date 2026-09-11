@@ -5,23 +5,24 @@ renames, or edits the source photographs.  The single exception is the
 explicit delete command, which sends originals to the Windows Recycle Bin
 so a mistaken deletion stays recoverable.
 
-This module is a thin entry point. Implementation lives in ``photoculler``.
+This module is a thin entry point. Implementation lives in sibling modules
+next to this file.
 """
 
 from __future__ import annotations
 
-from photoculler.winshell import configure_bundled_tk_runtime
+from winshell import configure_bundled_tk_runtime
 
 configure_bundled_tk_runtime()
 
-from photoculler.domain import (  # noqa: E402
+from domain import (  # noqa: E402
     PhotoGroup,
     build_photo_groups,
     scan_photo_paths,
     selected_members,
 )
-from photoculler.ui import PhotoCuller, main  # noqa: E402
-from photoculler.winshell import send_to_recycle_bin  # noqa: E402
+from ui import PhotoCuller, main  # noqa: E402
+from winshell import send_to_recycle_bin  # noqa: E402
 
 __all__ = [
     "PhotoCuller",

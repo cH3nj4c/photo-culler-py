@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PIL import Image  # noqa: E402
 import app as pc  # noqa: E402
-from photoculler import ui as pc_ui  # noqa: E402
+import ui as pc_ui  # noqa: E402
 
 tmp = Path(tempfile.mkdtemp(prefix="pc_delete_"))
 

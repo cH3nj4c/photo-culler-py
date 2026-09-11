@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import JPEG_EXTENSIONS, SUPPORTED_EXTENSIONS
+from config import JPEG_EXTENSIONS, SUPPORTED_EXTENSIONS
 
 PAIR_MODES = ("both", "raw", "jpg")
 

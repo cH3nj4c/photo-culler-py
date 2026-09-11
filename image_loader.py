@@ -8,8 +8,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from .jpeg_preloader import JpegCache
-from .imaging import decode_photo
+from jpeg_preloader import JpegCache
+from imaging import decode_photo
 
 
 class ImageLoader:

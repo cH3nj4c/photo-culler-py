@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PIL import Image
 import app as pc
-from photoculler import ui as pc_ui
+import ui as pc_ui
 
 # --- 1. pure-logic test: build_photo_groups ---
 tmp = Path(tempfile.mkdtemp(prefix="pc_smoke_"))
@@ -33,14 +33,14 @@ scanned_names = [path.name for path in pc.scan_photo_paths(tmp)]
 assert scanned_names == ["DSC_0001.DNG", "DSC_0001.JPG", "IMG_0002.PNG", "IMG_0003.TIFF"]
 large_path = tmp / "large.jpg"
 Image.new("RGB", (3200, 2400), "purple").save(large_path, quality=90)
-from photoculler.imaging import read_raster_image
+from imaging import read_raster_image
 
 small = read_raster_image(large_path, (264, 176))
 assert small.width <= 264 and small.height <= 176, small.size
 print("[1b] fast directory scan and reduced decode OK: %s" % (small.size,))
 
 # --- 1c. selection store round-trip ---
-from photoculler.selection_store import load_selection, save_selection
+from selection_store import load_selection, save_selection
 
 sel_dir = tmp / "sel"
 sel_dir.mkdir()

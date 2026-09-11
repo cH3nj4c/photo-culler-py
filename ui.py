@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from .config import (
+from config import (
     APP_NAME,
     PREVIEW_INTERACTIVE_DELAY_MS,
     PREVIEW_POLL_MS,
@@ -20,7 +20,7 @@ from .config import (
     THUMB_SLOT,
     THUMB_WIDTH,
 )
-from .domain import (
+from domain import (
     PhotoGroup,
     build_photo_groups,
     filter_visible_items,
@@ -29,17 +29,17 @@ from .domain import (
     pair_mode_label,
     scan_photo_paths,
 )
-from .export_service import ExportService
-from .image_loader import ImageLoader
-from .imaging import decode_photo, fit_for_display, thumbnail_decode_size
-from .jpeg_preloader import JpegCache, JpegPreloader
-from .preview_engine import (
+from export_service import ExportService
+from image_loader import ImageLoader
+from imaging import decode_photo, fit_for_display, thumbnail_decode_size
+from jpeg_preloader import JpegCache, JpegPreloader
+from preview_engine import (
     PreviewEngine,
     compute_geometry,
     constrain_pan,
 )
-from .selection_store import load_selection, save_selection
-from .winshell import enable_windows_high_dpi, send_to_recycle_bin
+from selection_store import load_selection, save_selection
+from winshell import enable_windows_high_dpi, send_to_recycle_bin
 
 
 class PhotoCuller(tk.Tk):

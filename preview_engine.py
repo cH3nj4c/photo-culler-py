@@ -11,7 +11,7 @@ from threading import Lock
 
 from PIL import Image
 
-from .config import (
+from config import (
     PREVIEW_OVERSCAN,
     PREVIEW_OVERSCAN_MAX_PX,
 )

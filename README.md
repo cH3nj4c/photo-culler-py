@@ -70,18 +70,17 @@ python app.py
 ```
 PhotoCuller-source/
 ├── app.py                    # 入口（配置打包 Tcl/Tk 后启动 UI）
-├── photoculler/
-│   ├── config.py             # 共享常量
-│   ├── domain.py             # PhotoGroup / 分组 / 导出成员规划（无 Tk 依赖）
-│   ├── imaging.py            # 图片解码（JPG/PNG/TIFF/DNG）
-│   ├── winshell.py           # HiDPI 与回收站删除
-│   ├── selection_store.py    # 选片记录持久化（%LOCALAPPDATA%）
-│   ├── jpeg_preloader.py     # JPEG LRU + 滑动窗口预载（单 worker）
-│   ├── image_loader.py       # 全分辨率后台解码
-│   ├── preview_engine.py     # 预览几何 + 双帧后台渲染
-│   ├── export_service.py     # 后台导出（进度 / Esc 取消）
-│   ├── workers.py            # latest-wins 单线程 worker
-│   └── ui.py                 # Tkinter 界面层
+├── config.py                 # 共享常量
+├── domain.py                 # PhotoGroup / 分组 / 导出成员规划（无 Tk 依赖）
+├── imaging.py                # 图片解码（JPG/PNG/TIFF/DNG）
+├── winshell.py               # HiDPI 与回收站删除
+├── selection_store.py        # 选片记录持久化（%LOCALAPPDATA%）
+├── jpeg_preloader.py         # JPEG LRU + 滑动窗口预载（单 worker）
+├── image_loader.py           # 全分辨率后台解码
+├── preview_engine.py         # 预览几何 + 双帧后台渲染
+├── export_service.py         # 后台导出（进度 / Esc 取消）
+├── workers.py                # latest-wins 单线程 worker
+├── ui.py                     # Tkinter 界面层
 ├── requirements.txt
 ├── test_smoke.py             # 功能冒烟测试
 ├── test_delete.py            # 删除功能测试

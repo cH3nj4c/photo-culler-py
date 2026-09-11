@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError  # noqa: F401  (re-export)
 
-from .config import JPEG_EXTENSIONS, THUMB_HEIGHT, THUMB_WIDTH, THUMBNAIL_DECODE_SCALE
+from config import JPEG_EXTENSIONS, THUMB_HEIGHT, THUMB_WIDTH, THUMBNAIL_DECODE_SCALE
 
 try:
     import rawpy

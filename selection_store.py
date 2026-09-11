@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from .domain import normalize_pair_mode
+from domain import normalize_pair_mode
 
 
 def selections_root() -> Path:

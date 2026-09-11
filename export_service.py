@@ -6,8 +6,8 @@ import queue
 import shutil
 from pathlib import Path
 
-from .domain import PhotoGroup, selected_members, unique_destination
-from .workers import LatestOnlyWorker
+from domain import PhotoGroup, selected_members, unique_destination
+from workers import LatestOnlyWorker
 
 
 class ExportService:
