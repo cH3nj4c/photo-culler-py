@@ -28,13 +28,28 @@ def thumbnail_decode_size(thumb_width: int, thumb_height: int) -> tuple[int, int
     )
 
 
-def read_raster_image(path: Path, max_size: tuple[int, int] | None = None) -> Image.Image:
+def _oriented_size_from_open(opened: Image.Image) -> tuple[int, int]:
+    width, height = opened.size
+    try:
+        orientation = opened.getexif().get(0x0112, 1)
+    except Exception:
+        orientation = 1
+    if orientation in (5, 6, 7, 8):
+        return height, width
+    return width, height
+
+
+def read_raster_image(
+    path: Path,
+    max_size: tuple[int, int] | None = None,
+) -> tuple[Image.Image, tuple[int, int]]:
     """Decode a normal image and detach it from its file handle.
 
-    For thumbnail reads, Pillow's ``draft`` lets JPEG decoders skip most of the
-    source pixels before decoding. Full-size reads keep the original pixel data.
+    Returns ``(image, original_oriented_size)``. For preview/thumbnail reads,
+    Pillow's ``draft`` skips most source pixels before decoding.
     """
     with Image.open(path) as opened:
+        original_size = _oriented_size_from_open(opened)
         if max_size is not None:
             try:
                 opened.draft("RGB", max_size)
@@ -44,10 +59,12 @@ def read_raster_image(path: Path, max_size: tuple[int, int] | None = None) -> Im
         image = ImageOps.exif_transpose(opened)
         if max_size is not None:
             image.thumbnail(max_size, Image.Resampling.BILINEAR)
-        return image.convert("RGB").copy()
+        return image.convert("RGB").copy(), original_size
 
 
-def read_dng_image(path: Path, thumbnail_size: tuple[int, int] | None = None) -> Image.Image:
+def read_dng_image(
+    path: Path, thumbnail_size: tuple[int, int] | None = None
+) -> tuple[Image.Image, tuple[int, int]]:
     if rawpy is None:
         raise RuntimeError("DNG 支持组件未安装")
     with rawpy.imread(str(path)) as raw:
@@ -55,17 +72,21 @@ def read_dng_image(path: Path, thumbnail_size: tuple[int, int] | None = None) ->
             thumb = raw.extract_thumb()
             if thumb.format == rawpy.ThumbFormat.JPEG:
                 with io.BytesIO(thumb.data) as embedded:
-                    image = ImageOps.exif_transpose(Image.open(embedded)).convert("RGB")
+                    with Image.open(embedded) as thumb_im:
+                        original_size = _oriented_size_from_open(thumb_im)
+                        image = ImageOps.exif_transpose(thumb_im).convert("RGB")
             else:
                 image = Image.fromarray(thumb.data).convert("RGB")
+                original_size = image.size
         except Exception:
             array = raw.postprocess(
                 use_camera_wb=True, no_auto_bright=False, half_size=True, output_bps=8
             )
             image = Image.fromarray(array).convert("RGB")
+            original_size = image.size
     if thumbnail_size is not None:
         image.thumbnail(thumbnail_size, Image.Resampling.BILINEAR)
-    return image.copy()
+    return image.copy(), original_size
 
 
 def fit_long_edge(image: Image.Image, long_edge: int, resample=None) -> Image.Image:
@@ -93,18 +114,16 @@ def decode_preview_photo(
     path: Path,
     long_edge: int = PREVIEW_CACHE_LONG_EDGE,
 ) -> tuple[Image.Image, tuple[int, int]]:
-    """Decode a photo for the preview cache.
+    """Decode a photo for the preview cache in a single file open.
 
     Returns ``(preview_image, original_size)``. JPEG uses Pillow ``draft`` so
     most source pixels are skipped before decode; ``original_size`` is the
     oriented full-resolution size used for zoom/fit math.
     """
-    original_size = read_oriented_size(path)
     if path.suffix.lower() == ".dng":
-        full = read_dng_image(path)
+        full, original_size = read_dng_image(path)
         return downsample_to_edge(full, long_edge), original_size
-    # draft() + BILINEAR thumbnail — avoids full decode + LANCZOS.
-    preview = read_raster_image(
+    preview, original_size = read_raster_image(
         path, (long_edge, long_edge) if long_edge > 0 else None
     )
     if max(preview.size) > long_edge > 0:
@@ -119,8 +138,10 @@ def decode_photo(
 ) -> Image.Image:
     suffix = path.suffix.lower()
     if suffix == ".dng":
-        return read_dng_image(path, thumb_size if thumbnail else None)
-    return read_raster_image(path, thumb_size if thumbnail else None)
+        image, _size = read_dng_image(path, thumb_size if thumbnail else None)
+        return image
+    image, _size = read_raster_image(path, thumb_size if thumbnail else None)
+    return image
 
 
 def fit_for_display(
@@ -137,14 +158,7 @@ def fit_for_display(
 def read_oriented_size(path: Path) -> tuple[int, int]:
     """Original pixel size after EXIF orientation, without decoding pixels."""
     with Image.open(path) as opened:
-        width, height = opened.size
-        try:
-            orientation = opened.getexif().get(0x0112, 1)
-        except Exception:
-            orientation = 1
-    if orientation in (5, 6, 7, 8):
-        return height, width
-    return width, height
+        return _oriented_size_from_open(opened)
 
 
 def downsample_to_edge(image: Image.Image, max_edge: int) -> Image.Image:

@@ -28,7 +28,7 @@ from domain import (
     next_pair_mode,
     normalize_pair_mode,
     pair_mode_label,
-    scan_photo_paths,
+    scan_photo_entries,
 )
 from export_service import ExportService
 from image_loader import ImageLoader
@@ -356,7 +356,7 @@ class PhotoCuller(tk.Tk):
             return
         folder = Path(chosen)
         try:
-            paths = scan_photo_paths(folder)
+            entries = scan_photo_entries(folder)
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"无法读取这个文件夹：\n{exc}")
             return
@@ -371,7 +371,10 @@ class PhotoCuller(tk.Tk):
         self._status_note = ""
 
         self.folder = folder
-        self.all_items = build_photo_groups(paths)
+        mtime_ns_by_path = {str(path): mtime_ns for path, mtime_ns in entries}
+        self.all_items = build_photo_groups(
+            [path for path, _mtime in entries], mtime_ns_by_path
+        )
         self.index = 0
         self._invalidate_visible()
         self.current_source_image = None
@@ -1144,11 +1147,8 @@ class PhotoCuller(tk.Tk):
 
     def _thumbnail(self, item: PhotoGroup):
         path = item.primary
-        try:
-            mtime_ns = path.stat().st_mtime_ns
-        except OSError:
-            mtime_ns = 0
-        cache_key = (item.primary_id, mtime_ns)
+        # mtime comes from the directory scan — no per-paint stat().
+        cache_key = (item.primary_id, item.primary_mtime_ns)
         cached = self.thumbnail_cache.get(cache_key)
         if cached is not None:
             return cached

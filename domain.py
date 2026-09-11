@@ -19,6 +19,7 @@ class PhotoGroup:
     primary: Path
     primary_id: str
     members: tuple[Path, ...]
+    primary_mtime_ns: int = 0
 
     @property
     def paired_raw_jpeg(self) -> bool:
@@ -71,8 +72,20 @@ def unique_destination(folder: Path, filename: str) -> Path:
         number += 1
 
 
-def build_photo_groups(paths: list[Path]) -> list[PhotoGroup]:
-    """Hide DNG + JPEG pairs behind one culling item, without grouping unrelated files."""
+def build_photo_groups(
+    paths: list[Path],
+    mtime_ns_by_path: dict[str, int] | None = None,
+) -> list[PhotoGroup]:
+    """Hide DNG + JPEG pairs behind one culling item, without grouping unrelated files.
+
+    ``mtime_ns_by_path`` maps ``str(path)`` → st_mtime_ns from the directory
+    scan so thumbnail cache keys need no extra ``stat()`` per paint.
+    """
+    mtimes = mtime_ns_by_path or {}
+
+    def mtime_of(path: Path) -> int:
+        return mtimes.get(str(path), 0)
+
     by_stem: dict[str, list[Path]] = {}
     for path in paths:
         by_stem.setdefault(path.stem.casefold(), []).append(path)
@@ -88,39 +101,61 @@ def build_photo_groups(paths: list[Path]) -> list[PhotoGroup]:
             primary_id = str(primary.resolve())
             key = "pair|" + str(primary.parent.resolve()).casefold() + "|" + primary.stem.casefold()
             result.append(
-                PhotoGroup(key=key, primary=primary, primary_id=primary_id, members=paired_members)
+                PhotoGroup(
+                    key=key,
+                    primary=primary,
+                    primary_id=primary_id,
+                    members=paired_members,
+                    primary_mtime_ns=mtime_of(primary),
+                )
             )
             paired_paths = set(paired_members)
             for path in ordered:
                 if path not in paired_paths:
-                    result.append(_single_group(path))
+                    result.append(_single_group(path, mtime_of(path)))
         else:
             for path in ordered:
-                result.append(_single_group(path))
+                result.append(_single_group(path, mtime_of(path)))
 
     return sorted(result, key=lambda item: item.primary.name.casefold())
 
 
-def _single_group(path: Path) -> PhotoGroup:
+def _single_group(path: Path, mtime_ns: int = 0) -> PhotoGroup:
     resolved = str(path.resolve())
-    return PhotoGroup(key=resolved, primary=path, primary_id=resolved, members=(path,))
+    return PhotoGroup(
+        key=resolved,
+        primary=path,
+        primary_id=resolved,
+        members=(path,),
+        primary_mtime_ns=mtime_ns,
+    )
 
 
-def scan_photo_paths(folder: Path) -> list[Path]:
-    """List supported photos with one directory enumeration pass.
+def scan_photo_entries(folder: Path) -> list[tuple[Path, int]]:
+    """List supported photos with mtime in one directory enumeration pass.
 
-    ``Path.iterdir()`` followed by ``Path.is_file()`` can issue an additional
-    stat call for every entry. ``os.scandir`` keeps the directory metadata
-    returned by Windows and is cheaper for folders containing many files.
+    ``os.scandir`` keeps the directory metadata returned by Windows; on NTFS
+    ``entry.stat()`` is usually free (no extra network/disk round-trip).
     """
-    paths: list[Path] = []
+    found: list[tuple[Path, int]] = []
     with os.scandir(folder) as entries:
         for entry in entries:
             if not entry.is_file():
                 continue
-            if Path(entry.name).suffix.casefold() in SUPPORTED_EXTENSIONS:
-                paths.append(Path(entry.path))
-    return sorted(paths, key=lambda path: path.name.casefold())
+            if Path(entry.name).suffix.casefold() not in SUPPORTED_EXTENSIONS:
+                continue
+            try:
+                mtime_ns = entry.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = 0
+            found.append((Path(entry.path), mtime_ns))
+    found.sort(key=lambda pair: pair[0].name.casefold())
+    return found
+
+
+def scan_photo_paths(folder: Path) -> list[Path]:
+    """List supported photos with one directory enumeration pass."""
+    return [path for path, _mtime in scan_photo_entries(folder)]
 
 
 def filter_visible_items(

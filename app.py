@@ -18,6 +18,7 @@ configure_bundled_tk_runtime()
 from domain import (  # noqa: E402
     PhotoGroup,
     build_photo_groups,
+    scan_photo_entries,
     scan_photo_paths,
     selected_members,
 )

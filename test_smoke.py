@@ -16,14 +16,18 @@ tmp = Path(tempfile.mkdtemp(prefix="pc_smoke_"))
 (tmp / "DSC_0001.JPG").write_bytes(b"x")
 (tmp / "IMG_0002.PNG").write_bytes(b"x")
 (tmp / "IMG_0003.TIFF").write_bytes(b"x")
-paths = sorted(p for p in tmp.iterdir() if p.is_file())
-groups = pc.build_photo_groups(paths)
+from domain import scan_photo_entries
+
+entries = scan_photo_entries(tmp)
+mtime_map = {str(p): m for p, m in entries}
+groups = pc.build_photo_groups([p for p, _m in entries], mtime_map)
 assert len(groups) == 3, f"expected 3 groups, got {len(groups)}"
 pair = next(g for g in groups if g.paired_raw_jpeg)
 assert pair.key.startswith("pair|"), pair.key
 assert len(pair.members) == 2
 assert pair.primary.name == "DSC_0001.JPG"
 assert pair.primary_id.endswith("DSC_0001.JPG")
+assert pair.primary_mtime_ns > 0, "scan-time mtime should be recorded"
 singles = [g for g in groups if not g.paired_raw_jpeg]
 assert all(len(g.members) == 1 for g in singles)
 print("[1] build_photo_groups OK")
@@ -35,7 +39,7 @@ large_path = tmp / "large.jpg"
 Image.new("RGB", (3200, 2400), "purple").save(large_path, quality=90)
 from imaging import read_raster_image
 
-small = read_raster_image(large_path, (264, 176))
+small, _orig = read_raster_image(large_path, (264, 176))
 assert small.width <= 264 and small.height <= 176, small.size
 print("[1b] fast directory scan and reduced decode OK: %s" % (small.size,))
 
