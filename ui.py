@@ -158,23 +158,26 @@ class PhotoCuller(tk.Tk):
         toolbar = ttk.Frame(self, style="Toolbar.TFrame", padding=(16, 10))
         toolbar.pack(fill="x")
 
-        ttk.Button(
-            toolbar, text="打开照片文件夹  O", style="App.TButton", command=self.open_folder
-        ).pack(side="left")
+        # Left: current folder only. All action controls live on the right.
         self.folder_label = ttk.Label(toolbar, text="尚未打开文件夹", style="Header.TLabel")
-        self.folder_label.pack(side="left", padx=(14, 0))
+        self.folder_label.pack(side="left", padx=(0, 12))
 
+        # pack(side="right") stacks right-to-left, so declare last visual first.
         ttk.Button(
             toolbar, text="导出保留照片  E", style="App.TButton", command=self.export_kept
         ).pack(side="right")
         ttk.Button(
-            toolbar, text="适合屏幕  Z", style="App.TButton", command=self.zoom_fit
+            toolbar, text="100%  1", style="App.TButton", command=self.zoom_actual
         ).pack(side="right", padx=(0, 6))
         ttk.Button(
-            toolbar, text="100%  1", style="App.TButton", command=self.zoom_actual
+            toolbar, text="适合屏幕  Z", style="App.TButton", command=self.zoom_fit
         ).pack(side="right", padx=(0, 6))
         self.zoom_label = ttk.Label(toolbar, text="适合屏幕", style="Zoom.TLabel")
         self.zoom_label.pack(side="right", padx=(0, 12))
+        ttk.Checkbutton(
+            toolbar, text="只看保留", variable=self.show_kept_only,
+            style="App.TCheckbutton", command=self.toggle_filter,
+        ).pack(side="right", padx=(0, 10))
         ttk.Button(
             toolbar, text="重置模式", style="App.TButton", command=self.reset_all_pair_modes
         ).pack(side="right", padx=(0, 6))
@@ -190,11 +193,10 @@ class PhotoCuller(tk.Tk):
         ).pack(side="right", padx=(0, 6))
         ttk.Button(
             toolbar, text="保留 / 取消  Space", style="Keep.TButton", command=self.toggle_keep
-        ).pack(side="right", padx=(0, 10))
-        ttk.Checkbutton(
-            toolbar, text="只看保留", variable=self.show_kept_only,
-            style="App.TCheckbutton", command=self.toggle_filter,
-        ).pack(side="right", padx=(0, 16))
+        ).pack(side="right", padx=(0, 6))
+        ttk.Button(
+            toolbar, text="打开照片文件夹  O", style="App.TButton", command=self.open_folder
+        ).pack(side="right", padx=(0, 6))
 
         self.preview_frame = tk.Frame(self, bg="#111317", highlightthickness=0)
         self.preview_frame.pack(fill="both", expand=True, padx=16, pady=(16, 8))
