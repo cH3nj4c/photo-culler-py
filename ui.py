@@ -84,6 +84,8 @@ class PhotoCuller(tk.Tk):
         self._drag_state = None
         self._interactive_render_job = None
         self._quality_render_job = None
+        self._slide_anim_job = None
+        self._slide_direction = 0
         self._pending_reset_zoom = True
         self._loading_path_id: str | None = None
         self._loading_full_path_id: str | None = None
@@ -422,6 +424,7 @@ class PhotoCuller(tk.Tk):
         if not items:
             return
         # Wrap around: past the last photo goes to the first, and vice versa.
+        self._slide_direction = direction
         self.index = (self.index + direction) % len(items)
         self._show_current(center=True)
 
@@ -536,6 +539,15 @@ class PhotoCuller(tk.Tk):
         self._render_thumbnails(center=center)
         self._ensure_jpeg_window(self.index)
 
+        switching = self.current_source_id is not None and self.current_source_id != path_id
+        if switching:
+            # New photo: drop pan leftover from the previous image so the frame
+            # cannot appear shifted to one side. Keep the old canvas item so the
+            # slide animation has something to move.
+            self.pan_x = 0.0
+            self.pan_y = 0.0
+            reset_zoom = True
+
         if self.current_source_path == path and self.current_source_image is not None:
             self._pending_reset_zoom = reset_zoom
             self._render_preview_now(interactive=True)
@@ -552,7 +564,7 @@ class PhotoCuller(tk.Tk):
             self._set_status(self._status_text(item))
             return
 
-        # Decode a preview-sized frame off the UI thread (full-res comes later on zoom).
+        # Decode off-thread. Keep the previous frame on screen; slide runs when ready.
         self.current_source_image = None
         self.current_source_path = path
         self.current_source_id = path_id
@@ -562,8 +574,7 @@ class PhotoCuller(tk.Tk):
         self._pending_full_zoom = None
         self._loading_path_id = path_id
         self._loading_full_path_id = None
-        self._pending_reset_zoom = reset_zoom
-        self._show_preview_message(f"正在载入\n{path.name}")
+        self._pending_reset_zoom = True
         self.image_loader.submit(path, path_id, full_resolution=False)
 
     def _adopt_preview_image(
@@ -571,9 +582,15 @@ class PhotoCuller(tk.Tk):
     ) -> None:
         if self.current_source_id != path_id:
             self.preview_engine.clear_levels()
+            self.pan_x = 0.0
+            self.pan_y = 0.0
         self._preview_source_image = image
         self._full_source_image = None
-        self._original_size = original_size
+        # Prefer EXIF-oriented original size; never keep a stale (1,1) default.
+        if original_size and original_size[0] > 0 and original_size[1] > 0:
+            self._original_size = original_size
+        else:
+            self._original_size = image.size
         self._using_full_resolution = False
         self.current_source_image = image
         self.current_source_path = path
@@ -678,12 +695,69 @@ class PhotoCuller(tk.Tk):
         )
 
     def _apply_preview_frame(self, frame, geometry) -> None:
+        # A quality/viewport frame must not snap the gallery while a slide is running.
+        if self._slide_anim_job is not None and self._slide_direction == 0:
+            return
+        previous_photo = self.preview_photo
         self.preview_photo = ImageTk.PhotoImage(frame)
+        direction = self._slide_direction
+        self._slide_direction = 0
+
+        # Drop any orphaned slide leftovers.
+        if self.preview_image_item is not None:
+            for item_id in self.preview_canvas.find_withtag("preview-image"):
+                if item_id != self.preview_image_item:
+                    self.preview_canvas.delete(item_id)
+        self.preview_canvas.delete("preview-message")
+
+        target_x = round(geometry.origin[0])
+        target_y = round(geometry.origin[1])
+
+        if self.preview_image_item is not None and direction != 0:
+            previous_item = self.preview_image_item
+            canvas_width = max(self.preview_canvas.winfo_width(), 1)
+            # Travel far enough that the outgoing frame fully leaves the viewport.
+            try:
+                prev_bounds = self.preview_canvas.bbox(previous_item)
+            except tk.TclError:
+                prev_bounds = None
+            if prev_bounds:
+                prev_w = max(1, prev_bounds[2] - prev_bounds[0])
+            else:
+                prev_w = canvas_width
+            travel = int(canvas_width + prev_w * 0.35 + 48)
+
+            # Next (+1): old exits left, new enters from the right (and vice versa).
+            new_item = self.preview_canvas.create_image(
+                target_x + direction * travel,
+                target_y,
+                image=self.preview_photo,
+                anchor="nw",
+                tags=("preview-image", "slide-new"),
+            )
+            self.preview_image_item = new_item
+            self.preview_canvas.tag_raise(new_item)
+            self._preview_item_origin = geometry.origin
+            self._preview_item_size = frame.size
+            self._update_zoom_label()
+            self.preview_canvas.configure(
+                cursor="fleur" if self.zoom_scale > self.fit_scale + 0.0001 else "arrow"
+            )
+            self._slide_prev_photo = previous_photo
+            self._start_slide_animation(
+                previous_item,
+                new_item,
+                direction,
+                travel,
+                target_x,
+                target_y,
+            )
+            return
+
         if self.preview_image_item is None:
-            self.preview_canvas.delete("preview-message")
             self.preview_image_item = self.preview_canvas.create_image(
-                round(geometry.origin[0]),
-                round(geometry.origin[1]),
+                target_x,
+                target_y,
                 image=self.preview_photo,
                 anchor="nw",
                 tags="preview-image",
@@ -692,17 +766,87 @@ class PhotoCuller(tk.Tk):
             self.preview_canvas.itemconfigure(
                 self.preview_image_item, image=self.preview_photo
             )
-        self.preview_canvas.coords(
-            self.preview_image_item,
-            round(geometry.origin[0]),
-            round(geometry.origin[1]),
-        )
+            self.preview_canvas.coords(self.preview_image_item, target_x, target_y)
         self._preview_item_origin = geometry.origin
         self._preview_item_size = frame.size
         self._update_zoom_label()
         self.preview_canvas.configure(
             cursor="fleur" if self.zoom_scale > self.fit_scale + 0.0001 else "arrow"
         )
+
+    def _start_slide_animation(
+        self,
+        previous_item,
+        new_item,
+        direction: int,
+        travel: int,
+        target_x: int,
+        target_y: int,
+    ) -> None:
+        if self._slide_anim_job is not None:
+            self.after_cancel(self._slide_anim_job)
+            self._slide_anim_job = None
+        frames = 16
+        self._slide_anim_job = self.after(
+            0,
+            lambda: self._step_slide_animation(
+                previous_item,
+                new_item,
+                direction,
+                travel,
+                target_x,
+                target_y,
+                frames,
+                0,
+            ),
+        )
+
+    def _step_slide_animation(
+        self,
+        previous_item,
+        new_item,
+        direction: int,
+        travel: int,
+        target_x: int,
+        target_y: int,
+        frames: int,
+        frame_index: int,
+    ) -> None:
+        self._slide_anim_job = None
+        if not self.preview_canvas.winfo_exists():
+            return
+        try:
+            if frame_index >= frames:
+                self.preview_canvas.delete(previous_item)
+                self.preview_canvas.coords(new_item, target_x, target_y)
+                self.preview_image_item = new_item
+                self._preview_item_origin = (target_x, target_y)
+                return
+
+            t = (frame_index + 1) / float(frames)
+            # Ease-out cubic: fast start, soft landing.
+            ease = 1.0 - (1.0 - t) ** 3
+            # outgoing: target → fully off-screen on the exit side
+            prev_x = target_x - direction * travel * ease
+            # incoming: off-screen on the opposite side → target
+            new_x = target_x + direction * travel * (1.0 - ease)
+            self.preview_canvas.coords(previous_item, prev_x, target_y)
+            self.preview_canvas.coords(new_item, new_x, target_y)
+            self._slide_anim_job = self.after(
+                16,
+                lambda: self._step_slide_animation(
+                    previous_item,
+                    new_item,
+                    direction,
+                    travel,
+                    target_x,
+                    target_y,
+                    frames,
+                    frame_index + 1,
+                ),
+            )
+        except tk.TclError:
+            self._slide_anim_job = None
 
     def _show_preview_message(self, message: str) -> None:
         self.preview_engine.cancel_all()
@@ -726,16 +870,31 @@ class PhotoCuller(tk.Tk):
         self.preview_canvas.configure(cursor="arrow")
         self.zoom_label.configure(text="—")
 
-    def _cancel_ui_render_jobs(self) -> None:
+    def _cancel_ui_render_jobs(self, cancel_slide: bool = True) -> None:
         if self._interactive_render_job is not None:
             self.after_cancel(self._interactive_render_job)
             self._interactive_render_job = None
         if self._quality_render_job is not None:
             self.after_cancel(self._quality_render_job)
             self._quality_render_job = None
+        if cancel_slide and self._slide_anim_job is not None:
+            self.after_cancel(self._slide_anim_job)
+            self._slide_anim_job = None
+            self._cleanup_slide_orphans()
+
+    def _cleanup_slide_orphans(self) -> None:
+        if self.preview_image_item is None:
+            return
+        try:
+            for item_id in self.preview_canvas.find_withtag("preview-image"):
+                if item_id != self.preview_image_item:
+                    self.preview_canvas.delete(item_id)
+        except tk.TclError:
+            pass
 
     def _schedule_preview_render(self, interactive=True, quality_delay=PREVIEW_QUALITY_DELAY_MS):
-        self._cancel_ui_render_jobs()
+        # Do not cancel an in-flight gallery slide — only viewport re-renders.
+        self._cancel_ui_render_jobs(cancel_slide=False)
         if interactive:
             self._interactive_render_job = self.after(
                 PREVIEW_INTERACTIVE_DELAY_MS, self._render_interactive_frame
@@ -805,8 +964,6 @@ class PhotoCuller(tk.Tk):
         path = self.current_source_path or Path(path_id)
         if full_flag:
             self._adopt_full_image(path, path_id, image)
-            self.preview_image_item = None
-            self.preview_canvas.delete("all")
             action = self._pending_full_zoom
             scale = self._pending_full_scale
             self._pending_full_zoom = None
@@ -822,14 +979,14 @@ class PhotoCuller(tk.Tk):
             else:
                 self.zoom_scale = max(self.fit_scale, 1.0)
             self._pending_reset_zoom = False
+            self._slide_direction = 0  # zoom swap is not a gallery transition
             self._render_preview_now(interactive=True)
             self._schedule_preview_render(interactive=False, quality_delay=90)
             self._set_status(self._status_text(self.current_item))
             return
 
         self._adopt_preview_image(path, path_id, image, original_size or image.size)
-        self.preview_image_item = None  # message canvas may still be showing
-        self.preview_canvas.delete("all")
+        # Keep any previous frame so change_index can slide it away.
         self._render_preview_now(interactive=True)
         self._schedule_preview_render(interactive=False, quality_delay=90)
         item = self.current_item

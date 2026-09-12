@@ -173,6 +173,7 @@ def probe():
         result["status"] = app.status_label.cget("text")
         # exercise navigation + zoom + keep + filter
         app.change_index(1)
+        assert app._slide_direction == 1, "navigation should trigger a rightward slide"
         app.zoom_fit()
         app.zoom_actual()
         app.toggle_keep()
