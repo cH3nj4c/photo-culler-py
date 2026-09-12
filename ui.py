@@ -41,6 +41,7 @@ from preview_engine import (
 from selection_store import load_selection, save_selection
 from sysmem import describe_cache_plan, recommend_jpeg_cache_limit
 from thumbnail_service import ThumbnailService
+from widgets import RoundedButton, RoundedToggle
 from winshell import enable_windows_high_dpi, send_to_recycle_bin
 
 
@@ -142,8 +143,6 @@ class PhotoCuller(tk.Tk):
             "Zoom.TLabel", background="#202329", foreground="#8bd7ff",
             font=("Segoe UI", 10, "bold"),
         )
-        style.configure("App.TButton", font=("Segoe UI", 10), padding=(11, 7))
-        style.configure("Keep.TButton", font=("Segoe UI", 10, "bold"), padding=(14, 7))
         style.configure(
             "App.TCheckbutton", background="#202329", foreground="#e7e9ed",
             font=("Segoe UI", 10),
@@ -163,39 +162,38 @@ class PhotoCuller(tk.Tk):
         self.folder_label.pack(side="left", padx=(0, 12))
 
         # pack(side="right") stacks right-to-left, so declare last visual first.
-        ttk.Button(
-            toolbar, text="导出保留照片  E", style="App.TButton", command=self.export_kept
+        RoundedButton(
+            toolbar, text="导出保留照片  E", command=self.export_kept
         ).pack(side="right")
-        ttk.Button(
-            toolbar, text="100%  1", style="App.TButton", command=self.zoom_actual
+        RoundedButton(
+            toolbar, text="100%  1", command=self.zoom_actual
         ).pack(side="right", padx=(0, 6))
-        ttk.Button(
-            toolbar, text="适合屏幕  Z", style="App.TButton", command=self.zoom_fit
+        RoundedButton(
+            toolbar, text="适合屏幕  Z", command=self.zoom_fit
         ).pack(side="right", padx=(0, 6))
         self.zoom_label = ttk.Label(toolbar, text="适合屏幕", style="Zoom.TLabel")
         self.zoom_label.pack(side="right", padx=(0, 12))
-        ttk.Checkbutton(
-            toolbar, text="只看保留", variable=self.show_kept_only,
-            style="App.TCheckbutton", command=self.toggle_filter,
+        RoundedToggle(
+            toolbar, text="只看保留", variable=self.show_kept_only, command=self.toggle_filter
         ).pack(side="right", padx=(0, 10))
-        ttk.Button(
-            toolbar, text="重置模式", style="App.TButton", command=self.reset_all_pair_modes
+        RoundedButton(
+            toolbar, text="重置模式", command=self.reset_all_pair_modes
         ).pack(side="right", padx=(0, 6))
-        ttk.Button(
-            toolbar, text="全不保留", style="App.TButton", command=self.clear_all_kept
+        RoundedButton(
+            toolbar, text="全不保留", command=self.clear_all_kept
         ).pack(side="right", padx=(0, 6))
-        self.keep_mode_button = ttk.Button(
-            toolbar, text="模式：单文件", style="App.TButton", command=self.cycle_keep_mode
+        self.keep_mode_button = RoundedButton(
+            toolbar, text="模式：单文件", command=self.cycle_keep_mode
         )
         self.keep_mode_button.pack(side="right", padx=(0, 6))
-        ttk.Button(
-            toolbar, text="删除  Del", style="App.TButton", command=self.delete_current
+        RoundedButton(
+            toolbar, text="删除  Del", command=self.delete_current, danger=True
         ).pack(side="right", padx=(0, 6))
-        ttk.Button(
-            toolbar, text="保留 / 取消  Space", style="Keep.TButton", command=self.toggle_keep
+        RoundedButton(
+            toolbar, text="保留 / 取消  Space", command=self.toggle_keep, accent=True
         ).pack(side="right", padx=(0, 6))
-        ttk.Button(
-            toolbar, text="打开照片文件夹  O", style="App.TButton", command=self.open_folder
+        RoundedButton(
+            toolbar, text="打开照片文件夹  O", command=self.open_folder
         ).pack(side="right", padx=(0, 6))
 
         self.preview_frame = tk.Frame(self, bg="#111317", highlightthickness=0)
@@ -222,7 +220,7 @@ class PhotoCuller(tk.Tk):
         self.preload_label.pack(side="left", padx=(18, 0))
         self.help_label = ttk.Label(
             info,
-            text="[ ] 切换 · Space 保留 · F 模式 · Del 删除 · 滚轮缩放 · Z 适合/100% · + − 微调 · 导出中按 Esc 取消",
+            text="← → 切换 · Space 保留 · F 模式 · Del 删除 · 滚轮缩放 · Z 适合/100% · + − 微调 · 导出中按 Esc 取消",
             style="Muted.TLabel",
         )
         self.help_label.pack(side="right")
@@ -244,8 +242,8 @@ class PhotoCuller(tk.Tk):
         self.thumb_canvas.bind("<Configure>", lambda _event: self._render_thumbnails())
 
     def _bind_keys(self) -> None:
-        self.bind_all("<bracketleft>", lambda _e: self.change_index(-1))
-        self.bind_all("<bracketright>", lambda _e: self.change_index(1))
+        self.bind_all("<Left>", lambda _e: self.change_index(-1))
+        self.bind_all("<Right>", lambda _e: self.change_index(1))
         self.bind_all("<space>", self._on_space)
         self.bind_all("<f>", self._on_mode_key)
         self.bind_all("<F>", self._on_mode_key)
@@ -270,6 +268,10 @@ class PhotoCuller(tk.Tk):
         widget_class = widget.winfo_class() if hasattr(widget, "winfo_class") else ""
         if widget_class in {"Checkbutton", "TButton", "TCheckbutton", "Button"}:
             return "break"
+        if isinstance(widget, (RoundedButton, RoundedToggle)):
+            if hasattr(widget, "invoke"):
+                widget.invoke()
+            return "break"
         self.toggle_keep()
         return "break"
 
@@ -289,6 +291,8 @@ class PhotoCuller(tk.Tk):
         widget = event.widget
         widget_class = widget.winfo_class() if hasattr(widget, "winfo_class") else ""
         if widget_class in {"Checkbutton", "TButton", "TCheckbutton", "Button"}:
+            return "break"
+        if isinstance(widget, RoundedButton):
             return "break"
         self.delete_current()
         return "break"
@@ -417,10 +421,9 @@ class PhotoCuller(tk.Tk):
         items = self.visible_items
         if not items:
             return
-        new_index = self.index + direction
-        if 0 <= new_index < len(items):
-            self.index = new_index
-            self._show_current(center=True)
+        # Wrap around: past the last photo goes to the first, and vice versa.
+        self.index = (self.index + direction) % len(items)
+        self._show_current(center=True)
 
     def toggle_keep(self) -> None:
         item = self.current_item
