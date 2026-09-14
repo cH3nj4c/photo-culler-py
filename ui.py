@@ -86,6 +86,7 @@ class PhotoCuller(tk.Tk):
         self._quality_render_job = None
         self._slide_anim_job = None
         self._slide_direction = 0
+        self._slide_prev_photo = None
         self._pending_reset_zoom = True
         self._loading_path_id: str | None = None
         self._loading_full_path_id: str | None = None
@@ -715,19 +716,32 @@ class PhotoCuller(tk.Tk):
 
         if self.preview_image_item is not None and direction != 0:
             previous_item = self.preview_image_item
-            canvas_width = max(self.preview_canvas.winfo_width(), 1)
-            # Travel far enough that the outgoing frame fully leaves the viewport.
+            canvas_w = max(self.preview_canvas.winfo_width(), 1)
+            canvas_h = max(self.preview_canvas.winfo_height(), 1)
             try:
                 prev_bounds = self.preview_canvas.bbox(previous_item)
             except tk.TclError:
                 prev_bounds = None
             if prev_bounds:
                 prev_w = max(1, prev_bounds[2] - prev_bounds[0])
+                prev_left = prev_bounds[0]
             else:
-                prev_w = canvas_width
-            travel = int(canvas_width + prev_w * 0.35 + 48)
+                prev_w = canvas_w
+                prev_left = target_x
+            new_w = max(1, frame.size[0])
 
-            # Next (+1): old exits left, new enters from the right (and vice versa).
+            # Distance so BOTH frames fully clear the viewport:
+            # outgoing must travel past its right/left edge; incoming starts fully off-canvas.
+            if direction > 0:
+                # Next: old exits left, new enters from the right.
+                exit_need = max(0, prev_left + prev_w) + 24  # push prev right edge to x<=0
+                enter_need = max(0, (canvas_w - target_x) + new_w) + 24
+            else:
+                # Prev: old exits right, new enters from the left.
+                exit_need = max(0, canvas_w - prev_left) + 24
+                enter_need = max(0, target_x + new_w) + 24
+            travel = int(max(exit_need, enter_need, canvas_w * 0.9))
+
             new_item = self.preview_canvas.create_image(
                 target_x + direction * travel,
                 target_y,
@@ -735,6 +749,7 @@ class PhotoCuller(tk.Tk):
                 anchor="nw",
                 tags=("preview-image", "slide-new"),
             )
+            self.preview_canvas.itemconfigure(previous_item, tags=("preview-image", "slide-old"))
             self.preview_image_item = new_item
             self.preview_canvas.tag_raise(new_item)
             self._preview_item_origin = geometry.origin
@@ -743,14 +758,15 @@ class PhotoCuller(tk.Tk):
             self.preview_canvas.configure(
                 cursor="fleur" if self.zoom_scale > self.fit_scale + 0.0001 else "arrow"
             )
+            # Keep the outgoing PhotoImage alive for the whole animation.
             self._slide_prev_photo = previous_photo
+            # Park both frames at their start positions before the first tick.
+            self.preview_canvas.coords(previous_item, target_x, target_y)
+            self.preview_canvas.coords(
+                new_item, target_x + direction * travel, target_y
+            )
             self._start_slide_animation(
-                previous_item,
-                new_item,
-                direction,
-                travel,
-                target_x,
-                target_y,
+                previous_item, new_item, direction, travel, target_x, target_y
             )
             return
 
@@ -786,7 +802,8 @@ class PhotoCuller(tk.Tk):
         if self._slide_anim_job is not None:
             self.after_cancel(self._slide_anim_job)
             self._slide_anim_job = None
-        frames = 16
+        # ~400ms total, ~120 ticks — smoother than a coarse 18-step glide.
+        frames = 48
         self._slide_anim_job = self.after(
             0,
             lambda: self._step_slide_animation(
@@ -814,26 +831,29 @@ class PhotoCuller(tk.Tk):
     ) -> None:
         self._slide_anim_job = None
         if not self.preview_canvas.winfo_exists():
+            self._slide_prev_photo = None
             return
         try:
             if frame_index >= frames:
-                self.preview_canvas.delete(previous_item)
                 self.preview_canvas.coords(new_item, target_x, target_y)
+                self.preview_canvas.delete(previous_item)
                 self.preview_image_item = new_item
-                self._preview_item_origin = (target_x, target_y)
+                self._preview_item_origin = (float(target_x), float(target_y))
+                self._slide_prev_photo = None
+                self.preview_canvas.update_idletasks()
                 return
 
             t = (frame_index + 1) / float(frames)
-            # Ease-out cubic: fast start, soft landing.
+            # Ease-out cubic: quick launch, soft settle.
             ease = 1.0 - (1.0 - t) ** 3
-            # outgoing: target → fully off-screen on the exit side
             prev_x = target_x - direction * travel * ease
-            # incoming: off-screen on the opposite side → target
             new_x = target_x + direction * travel * (1.0 - ease)
             self.preview_canvas.coords(previous_item, prev_x, target_y)
             self.preview_canvas.coords(new_item, new_x, target_y)
+            # Flush this frame now so Tk does not coalesce paint with the next tick.
+            self.preview_canvas.update_idletasks()
             self._slide_anim_job = self.after(
-                16,
+                8,
                 lambda: self._step_slide_animation(
                     previous_item,
                     new_item,
@@ -847,6 +867,7 @@ class PhotoCuller(tk.Tk):
             )
         except tk.TclError:
             self._slide_anim_job = None
+            self._slide_prev_photo = None
 
     def _show_preview_message(self, message: str) -> None:
         self.preview_engine.cancel_all()
