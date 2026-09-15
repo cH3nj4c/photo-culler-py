@@ -9,6 +9,7 @@ from PIL import Image, ImageOps
 
 from config import (
     PREVIEW_CACHE_LONG_EDGE,
+    RAW_EXTENSIONS,
     THUMB_HEIGHT,
     THUMB_WIDTH,
     THUMBNAIL_DECODE_SCALE,
@@ -18,6 +19,10 @@ try:
     import rawpy
 except ImportError:  # pragma: no cover - optional dependency
     rawpy = None
+
+
+def is_raw_path(path: Path) -> bool:
+    return path.suffix.lower() in RAW_EXTENSIONS
 
 
 def thumbnail_decode_size(thumb_width: int, thumb_height: int) -> tuple[int, int]:
@@ -62,19 +67,19 @@ def read_raster_image(
         return image.convert("RGB").copy(), original_size
 
 
-def read_dng_image(
+def read_raw_image(
     path: Path,
     thumbnail_size: tuple[int, int] | None = None,
     full_resolution: bool = False,
 ) -> tuple[Image.Image, tuple[int, int]]:
-    """Decode DNG for display.
+    """Decode a camera RAW (DNG, CR2/CR3, NEF, ARW, ORF, RW2, RAF, …) via LibRaw.
 
     ``original_size`` is the processed (``iwidth``/``iheight``) sensor output
     size, not the embedded JPEG thumb — so 100% zoom can request a true full
     postprocess when ``full_resolution=True``.
     """
     if rawpy is None:
-        raise RuntimeError("DNG 支持组件未安装")
+        raise RuntimeError("RAW 支持组件未安装（需要 rawpy / LibRaw）")
     with rawpy.imread(str(path)) as raw:
         try:
             original_size = (int(raw.sizes.iwidth), int(raw.sizes.iheight))
@@ -112,6 +117,10 @@ def read_dng_image(
     return image.copy(), original_size
 
 
+# Back-compat alias
+read_dng_image = read_raw_image
+
+
 def fit_long_edge(image: Image.Image, long_edge: int, resample=None) -> Image.Image:
     """Return a copy scaled so the long edge is at most *long_edge*.
 
@@ -143,8 +152,8 @@ def decode_preview_photo(
     most source pixels are skipped before decode; ``original_size`` is the
     oriented full-resolution size used for zoom/fit math.
     """
-    if path.suffix.lower() == ".dng":
-        full, original_size = read_dng_image(path)
+    if is_raw_path(path):
+        full, original_size = read_raw_image(path)
         return downsample_to_edge(full, long_edge), original_size
     preview, original_size = read_raster_image(
         path, (long_edge, long_edge) if long_edge > 0 else None
@@ -160,9 +169,8 @@ def decode_photo(
     thumb_size: tuple[int, int] | None = None,
     full_resolution: bool = False,
 ) -> Image.Image:
-    suffix = path.suffix.lower()
-    if suffix == ".dng":
-        image, _size = read_dng_image(
+    if is_raw_path(path):
+        image, _size = read_raw_image(
             path,
             thumb_size if thumbnail else None,
             full_resolution=full_resolution,

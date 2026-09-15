@@ -60,16 +60,16 @@ from domain import filter_visible_items
 
 pair_dir = tmp / "pair_logic"
 pair_dir.mkdir()
-dng = pair_dir / "DSC_0100.DNG"
+raw = pair_dir / "DSC_0100.CR2"
 jpg = pair_dir / "DSC_0100.JPG"
-dng.write_bytes(b"raw")
+raw.write_bytes(b"raw")
 jpg.write_bytes(b"jpg")
 other = pair_dir / "OTHER.JPG"
 other.write_bytes(b"x")
-groups = pc.build_photo_groups([dng, jpg, other])
+groups = pc.build_photo_groups([raw, jpg, other])
 pair = next(g for g in groups if g.paired_raw_jpeg)
-assert pair.members == (dng, jpg) or set(pair.members) == {dng, jpg}
-# Simulate DNG deleted, JPG remains → rebuild as a single item
+assert pair.members == (raw, jpg) or set(pair.members) == {raw, jpg}
+# Simulate CR2 deleted, JPG remains → rebuild as a single item
 rebuilt = pc.build_photo_groups([jpg])
 assert len(rebuilt) == 1 and not rebuilt[0].paired_raw_jpeg
 assert rebuilt[0].primary == jpg
@@ -79,6 +79,24 @@ assert visible == [], "kept items must hide under 只看保留"
 visible_all = filter_visible_items(rebuilt, set(), show_kept_only=False)
 assert len(visible_all) == 1
 print("[1d] partial rebuild + filter OK")
+
+# --- 1d2. vendor RAW extensions pair with JPEG ---
+from config import RAW_EXTENSIONS
+
+assert ".cr2" in RAW_EXTENSIONS and ".nef" in RAW_EXTENSIONS and ".arw" in RAW_EXTENSIONS
+vendor_dir = tmp / "vendor_raw"
+vendor_dir.mkdir()
+for stem, ext in [("A_0001", ".CR2"), ("B_0001", ".NEF"), ("C_0001", ".ARW")]:
+    r = vendor_dir / f"{stem}{ext}"
+    j = vendor_dir / f"{stem}.JPG"
+    r.write_bytes(b"r")
+    j.write_bytes(b"j")
+vendor_groups = pc.build_photo_groups(
+    sorted(vendor_dir.iterdir(), key=lambda p: p.name.casefold())
+)
+assert len(vendor_groups) == 3
+assert all(g.paired_raw_jpeg for g in vendor_groups), vendor_groups
+print("[1d2] vendor RAW+JPG pairing OK")
 
 # --- 1e. adaptive JPEG cache from free RAM ---
 from sysmem import (

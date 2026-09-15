@@ -6,14 +6,14 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import JPEG_EXTENSIONS, SUPPORTED_EXTENSIONS
+from config import JPEG_EXTENSIONS, RAW_EXTENSIONS, SUPPORTED_EXTENSIONS
 
 PAIR_MODES = ("both", "raw", "jpg")
 
 
 @dataclass(frozen=True)
 class PhotoGroup:
-    """One culling decision, optionally made of a DNG and its JPEG preview."""
+    """One culling decision, optionally made of a RAW and its JPEG preview."""
 
     key: str
     primary: Path
@@ -24,7 +24,7 @@ class PhotoGroup:
     @property
     def paired_raw_jpeg(self) -> bool:
         return (
-            any(p.suffix.lower() == ".dng" for p in self.members)
+            any(p.suffix.lower() in RAW_EXTENSIONS for p in self.members)
             and any(p.suffix.lower() in JPEG_EXTENSIONS for p in self.members)
         )
 
@@ -51,7 +51,7 @@ def selected_members(item: PhotoGroup, mode: str) -> tuple[Path, ...]:
         return item.members
     mode = normalize_pair_mode(mode)
     if mode == "raw":
-        return tuple(p for p in item.members if p.suffix.lower() == ".dng")
+        return tuple(p for p in item.members if p.suffix.lower() in RAW_EXTENSIONS)
     if mode == "jpg":
         return tuple(p for p in item.members if p.suffix.lower() in JPEG_EXTENSIONS)
     return item.members
@@ -76,7 +76,7 @@ def build_photo_groups(
     paths: list[Path],
     mtime_ns_by_path: dict[str, int] | None = None,
 ) -> list[PhotoGroup]:
-    """Hide DNG + JPEG pairs behind one culling item, without grouping unrelated files.
+    """Hide RAW + JPEG pairs behind one culling item, without grouping unrelated files.
 
     ``mtime_ns_by_path`` maps ``str(path)`` → st_mtime_ns from the directory
     scan so thumbnail cache keys need no extra ``stat()`` per paint.
@@ -93,7 +93,7 @@ def build_photo_groups(
     result: list[PhotoGroup] = []
     for same_name_paths in by_stem.values():
         ordered = sorted(same_name_paths, key=lambda path: path.name.casefold())
-        raws = [path for path in ordered if path.suffix.lower() == ".dng"]
+        raws = [path for path in ordered if path.suffix.lower() in RAW_EXTENSIONS]
         jpegs = [path for path in ordered if path.suffix.lower() in JPEG_EXTENSIONS]
         paired_members = tuple(raws + jpegs)
         if raws and jpegs:

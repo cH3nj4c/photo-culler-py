@@ -7,11 +7,11 @@
 ## 功能特性
 
 - **快速浏览**：`←` / `→`（到头循环）或点击缩略图栏切换照片，切换带滑动过场；预览后台双帧渲染
-- **RAW+JPG 自动绑定**：同一次拍摄的 `DSC_0001.DNG` 与 `DSC_0001.JPG` 自动合并为一个选片项
+- **RAW+JPG 自动绑定**：同名 RAW（DNG/CR2/NEF/ARW 等）与 JPG 自动合并为一个选片项
 - **保留标记**：`Space` 标记/取消保留，缩略图黄色星号表示已保留；支持"只看保留"筛选
 - **快速删除**：`Del` 把当前组（RAW+JPG 整组）移入 Windows 回收站，可随时还原
 - **只读原则**：浏览和选片从不修改、移动或重命名原始照片；导出仅复制；唯一例外是删除（进回收站，可恢复）
-- **RAW 支持**：DNG 优先内嵌预览；100% 检视时再读入全分辨率
+- **RAW 支持**：DNG 及 Canon/Nikon/Sony/Olympus/Panasonic/Fuji 等主流 RAW；优先内嵌预览；100% 检视再读全分辨率
 - **低内存架构**：JPG 只缓存预览尺寸（长边 ≤2560），张数按空闲内存自适应；缩略图后台解码
 
 ## 支持格式
@@ -20,7 +20,7 @@
 |---|---|
 | `.jpg` / `.jpeg` | 预览尺寸滑动窗口缓存；100% 时按需读全图 |
 | `.png` / `.tif` / `.tiff` | 按需解码 |
-| `.dng` | 内嵌预览优先，无预览时 LibRaw 降级解码 |
+| 相机 RAW | 经 rawpy/LibRaw：DNG、CR2/CR3、NEF/NRW、ARW/SR2、ORF、RW2、RAF、PEF、3FR、MRW、ERF、DCR、KDC、MOS、IIQ 等；优先内嵌预览，100% 再全像素解码 |
 
 仅扫描文件夹第一层，不递归子目录。
 
@@ -101,7 +101,7 @@ PhotoCuller-source/
 - **导出**：后台拷贝，状态栏显示进度，导出中按 `Esc` 可取消
 - **目录读取**：`os.scandir` 单次枚举第一层文件
 - **缩略图**：只为可见范围生成；JPEG 用 `draft()` 降采样解码；缓存键为路径身份 + mtime（不含显示序号）
-- **RAW 解码**：rawpy `extract_thumb()` 优先，`postprocess(half_size=True)` 兜底
+- **RAW 解码**：rawpy/LibRaw；`extract_thumb()` 优先，`postprocess(half_size=True)` 兜底；100% 用全尺寸 postprocess
 - **删除**：`SHFileOperationW` + `FOF_ALLOWUNDO` 整组移入回收站，删除前二次确认；部分失败时保留剩余成员
 - **选片记录**：`%LOCALAPPDATA%\PhotoCuller\selections\<hash>.json`，保存失败会在状态栏提示
 - **内存探测**：`sysmem.py` 通过 `GlobalMemoryStatusEx` 读取物理内存，打开文件夹时重算缓存上限

@@ -2,8 +2,35 @@
 
 APP_NAME = "Photo Culler"
 
-SUPPORTED_EXTENSIONS = {".tiff", ".tif", ".png", ".jpeg", ".jpg", ".dng"}
+# Camera RAW formats decoded via rawpy / LibRaw (vendor-specific + DNG).
+RAW_EXTENSIONS = {
+    ".dng",  # Adobe / Leica / Ricoh / phone DNG
+    ".cr2",  # Canon
+    ".cr3",  # Canon
+    ".nef",  # Nikon
+    ".nrw",  # Nikon
+    ".arw",  # Sony
+    ".srf",  # Sony
+    ".sr2",  # Sony
+    ".orf",  # Olympus / OM System
+    ".rw2",  # Panasonic
+    ".raf",  # Fujifilm
+    ".pef",  # Pentax
+    ".raw",  # Panasonic / generic
+    ".rwl",  # Leica
+    ".3fr",  # Hasselblad
+    ".fff",  # Hasselblad / Leaf
+    ".mrw",  # Minolta
+    ".erf",  # Epson
+    ".dcr",  # Kodak
+    ".kdc",  # Kodak
+    ".mos",  # Leaf / Mamiya
+    ".iiq",  # Phase One
+}
+
 JPEG_EXTENSIONS = {".jpg", ".jpeg"}
+RASTER_EXTENSIONS = {".tiff", ".tif", ".png", ".jpeg", ".jpg"}
+SUPPORTED_EXTENSIONS = RASTER_EXTENSIONS | RAW_EXTENSIONS
 
 THUMB_WIDTH = 132
 THUMB_HEIGHT = 88

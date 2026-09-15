@@ -5,11 +5,11 @@ A fast photo-culling tool for Windows photography workflows. Open a folder, flip
 ## Features
 
 - **Fast browsing**: `←` / `→` (wraps at both ends) or click the thumbnail strip; previews render on a background pool with interactive + quality frames
-- **RAW+JPG pairing**: `DSC_0001.DNG` and `DSC_0001.JPG` from the same shot merge into one culling item
+- **RAW+JPG pairing**: same-stem RAW (DNG/CR2/NEF/ARW/…) and JPEG merge into one culling item
 - **Keep marks**: `Space` toggles keep; yellow star on the thumbnail; optional “kept only” filter
 - **Quick delete**: `Del` sends the current group (RAW+JPG together) to the Windows Recycle Bin
 - **Read-only sources**: browsing and marking never move, rename, or edit originals; export only copies; the only exception is delete, which is Recycle Bin (recoverable), not permanent erase
-- **RAW (DNG)**: embedded camera preview first; LibRaw fallback; full-resolution postprocess when you inspect at 100%
+- **Camera RAW**: DNG plus Canon/Nikon/Sony/Olympus/Panasonic/Fujifilm and more via LibRaw; embedded preview first, full postprocess at 100%
 - **Memory-aware cache**: sliding-window JPEG previews (long edge ≤ 2560) with a slot count derived from free/total RAM; full pixels load only for the current photo when zoomed
 - **Gallery transition**: photo switches slide the old frame out and the new frame in
 
@@ -19,7 +19,7 @@ A fast photo-culling tool for Windows photography workflows. Open a folder, flip
 |---|---|
 | `.jpg` / `.jpeg` | Preview-sized sliding-window cache + on-demand full decode for 100% |
 | `.png` / `.tif` / `.tiff` | Decoded as needed |
-| `.dng` | Embedded preview first; LibRaw fallback; full postprocess for 100% inspect |
+| `.dng` `.cr2` `.cr3` `.nef` `.nrw` `.arw` `.srf` `.sr2` `.orf` `.rw2` `.raf` `.pef` `.raw` `.rwl` `.3fr` `.fff` `.mrw` `.erf` `.dcr` `.kdc` `.mos` `.iiq` | Camera RAW via LibRaw; embedded preview first; full postprocess for 100% |
 
 Only the top level of the chosen folder is scanned (no recursion into subfolders).
 
@@ -34,7 +34,7 @@ pip install -r requirements.txt
 
 Dependencies: `Pillow`, `rawpy`, `numpy`.
 
-> Without `rawpy`, the app still runs: DNG preview is unavailable; other formats work normally.
+> Without `rawpy`, the app still runs: camera RAW preview is unavailable; other formats work normally.
 
 ## Usage
 
