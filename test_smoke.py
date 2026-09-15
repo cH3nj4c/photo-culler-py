@@ -178,6 +178,16 @@ name = auto.start()
 assert name in ("cpu", "dml", "cuda"), name
 print("[1h] resample backend OK: auto→", name, auto.describe())
 
+# --- 1i. temp cleanup helper ---
+from temp_cleanup import _is_app_temp_name
+
+assert _is_app_temp_name("pc_smoke_abc")
+assert _is_app_temp_name("PhotoCuller_cache")
+assert _is_app_temp_name("pc_delete_x")
+assert not _is_app_temp_name("important_user_data")
+assert not _is_app_temp_name("Photography")
+print("[1i] temp cleanup name filter OK")
+
 # --- 1g. async thumbnail service ---
 from thumbnail_service import ThumbnailService
 

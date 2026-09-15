@@ -48,6 +48,7 @@ from preview_engine import (
 )
 from selection_store import load_selection, save_selection
 from sysmem import describe_cache_plan, recommend_jpeg_cache_limit
+from temp_cleanup import cleanup_on_exit
 from thumbnail_service import ThumbnailService
 from widgets import RoundedButton, RoundedToggle
 from winshell import enable_windows_high_dpi, send_to_recycle_bin
@@ -1803,7 +1804,7 @@ class PhotoCuller(tk.Tk):
         self.status_label.configure(text=text)
 
     def _on_close(self):
-        """Stop background workers before Tk tears down its image runtime."""
+        """Stop background workers and drop temp files before Tk tears down."""
         self.export_service.cancel()
         self.preloader.invalidate()
         self.image_loader.cancel_pending()
@@ -1816,11 +1817,24 @@ class PhotoCuller(tk.Tk):
                 self.after_cancel(self._poll_job)
             except tk.TclError:
                 pass
+        # Release decoded bitmaps first so file handles aren't held on Windows.
+        try:
+            self.jpeg_cache.clear()
+            self.thumbnail_cache.clear()
+            self.preview_engine.clear_levels()
+            self._proxy_pil = None
+            self.current_source_image = None
+            self._preview_source_image = None
+            self._full_source_image = None
+        except Exception:
+            pass
         self.preview_engine.shutdown()
         self.image_loader.shutdown()
         self.preloader.close()
         self.export_service.close()
         self.thumbnail_service.shutdown()
+        # Selection JSON under %LOCALAPPDATA% is kept on purpose.
+        cleanup_on_exit()
         self.destroy()
 
 
