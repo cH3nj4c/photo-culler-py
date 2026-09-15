@@ -377,6 +377,43 @@ class PhotoCuller(tk.Tk):
         else:
             self._status_note = ""
 
+    def _reset_session_caches(self) -> None:
+        """Drop every decode/preview cache when the photo folder changes."""
+        self._cancel_zoom_anim()
+        self.image_loader.cancel_pending()
+        self.preview_engine.cancel_all()
+        self.preview_engine.clear_levels()
+        self.preloader.invalidate()
+        self.jpeg_cache.clear()
+        self.thumbnail_service.cancel_pending()
+        self.thumbnail_cache.clear()
+        self._proxy_pil = None
+        self._proxy_zoom = 1.0
+        self._proxy_origin = (0.0, 0.0)
+        self._proxy_image_nw = (0.0, 0.0)
+        self.current_source_image = None
+        self.current_source_path = None
+        self.current_source_id = None
+        self._preview_source_image = None
+        self._full_source_image = None
+        self._original_size = (1, 1)
+        self._using_full_resolution = False
+        self._pending_full_zoom = None
+        self._pending_full_scale = None
+        self._loading_path_id = None
+        self._loading_full_path_id = None
+        self._status_note = ""
+        self.preview_photo = None
+        self.preview_image_item = None
+        self._preview_item_origin = None
+        self._preview_item_size = None
+        self._drag_state = None
+        self._slide_direction = 0
+        try:
+            self.preview_canvas.delete("all")
+        except tk.TclError:
+            pass
+
     def open_folder(self) -> None:
         chosen = filedialog.askdirectory(
             title="选择包含照片的文件夹",
@@ -391,15 +428,8 @@ class PhotoCuller(tk.Tk):
             messagebox.showerror(APP_NAME, f"无法读取这个文件夹：\n{exc}")
             return
 
-        self.image_loader.cancel_pending()
-        self.preview_engine.cancel_all()
-        self.preview_engine.clear_levels()
-        self.preloader.invalidate()
-        self.jpeg_cache.clear()
-        self.thumbnail_service.cancel_pending()
+        self._reset_session_caches()
         cache_limit = self.jpeg_cache.retune_from_system_memory()
-        self.thumbnail_cache.clear()
-        self._status_note = ""
 
         self.folder = folder
         mtime_ns_by_path = {str(path): mtime_ns for path, mtime_ns in entries}
@@ -408,15 +438,6 @@ class PhotoCuller(tk.Tk):
         )
         self.index = 0
         self._invalidate_visible()
-        self.current_source_image = None
-        self.current_source_path = None
-        self.current_source_id = None
-        self._preview_source_image = None
-        self._full_source_image = None
-        self._original_size = (1, 1)
-        self._using_full_resolution = False
-        self._pending_full_zoom = None
-        self._loading_full_path_id = None
 
         saved, saved_pair_modes = load_selection(folder)
         current_keys = {item.key for item in self.all_items}
@@ -431,14 +452,15 @@ class PhotoCuller(tk.Tk):
         self.folder_label.configure(text=folder.name if folder.name else str(folder))
 
         if not self.all_items:
-            self._show_preview_message("这个文件夹中没有受支持的照片")
+            # Quiet empty state — no modal-style “unsupported folder” banner.
+            self._update_keep_mode_ui()
+            self._render_thumbnails()
             self._set_status(
-                f"支持 JPG、PNG、TIFF 及主流相机 RAW    "
+                f"0 张照片    支持 JPG、PNG、TIFF 及主流相机 RAW    "
                 f"{describe_cache_plan(cache_limit)}    "
                 f"{self.preview_engine.describe_resample_backend()}"
             )
-            self._update_keep_mode_ui()
-            self._render_thumbnails()
+            self.zoom_label.configure(text="—")
             return
         self._show_current(center=True)
 
@@ -978,7 +1000,12 @@ class PhotoCuller(tk.Tk):
         self._preview_item_origin = None
         self._preview_item_size = None
         self._drag_state = None
+        self._proxy_pil = None
         self.preview_canvas.delete("all")
+        if not message:
+            self.preview_canvas.configure(cursor="arrow")
+            self.zoom_label.configure(text="—")
+            return
         width = max(self.preview_canvas.winfo_width(), 1)
         height = max(self.preview_canvas.winfo_height(), 1)
         self.preview_canvas.create_text(
@@ -988,6 +1015,7 @@ class PhotoCuller(tk.Tk):
             fill="#bdc3cd",
             font=("Segoe UI", 16),
             justify="center",
+            tags="preview-message",
         )
         self.preview_canvas.configure(cursor="arrow")
         self.zoom_label.configure(text="—")
