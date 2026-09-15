@@ -170,6 +170,7 @@ class JpegPreloader:
 
     def _decode_one(self, generation: int, item: PhotoGroup) -> None:
         key = item.primary_id
+        should_report = False
         try:
             image, original_size = decode_preview_photo(item.primary)
             # Always fill cache — useful even if the user already moved on.
@@ -179,16 +180,17 @@ class JpegPreloader:
         finally:
             with self._lock:
                 self._inflight.pop(key, None)
-                if generation != self._generation:
-                    return
-                self._completed += 1
-                done = self._completed
-                total = max(self._pending_total, done)
-                idle = not self._inflight
-        if idle:
-            self.events.put((generation, total, total, True))
-        else:
-            self.events.put((generation, done, total, False))
+                if generation == self._generation:
+                    self._completed += 1
+                    done = self._completed
+                    total = max(self._pending_total, done)
+                    idle = not self._inflight
+                    should_report = True
+        if should_report:
+            if idle:
+                self.events.put((generation, total, total, True))
+            else:
+                self.events.put((generation, done, total, False))
 
     def close(self) -> None:
         self.invalidate()
