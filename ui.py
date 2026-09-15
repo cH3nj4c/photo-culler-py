@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import queue
 import tkinter as tk
 from pathlib import Path
@@ -20,6 +21,13 @@ from config import (
     THUMB_HEIGHT,
     THUMB_SLOT,
     THUMB_WIDTH,
+    ZOOM_FULLRES_MARGIN,
+    ZOOM_FULLRES_SETTLE_MS,
+    ZOOM_INTERACTIVE_DELAY_MS,
+    ZOOM_KEY_FACTOR,
+    ZOOM_LERP,
+    ZOOM_SETTLE_RATIO,
+    ZOOM_WHEEL_FACTOR,
 )
 from domain import (
     PhotoGroup,
@@ -81,6 +89,18 @@ class PhotoCuller(tk.Tk):
         self.fit_scale = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
+        self._zoom_target = 0.0  # always derive from zoom_scale on first use
+        self._zoom_anchor = None
+        self._zoom_anim_job = None
+        self._zoom_settle_job = None
+        self._zoom_gesture = False
+        # GIMP-style interactive proxy: scale the last rendered viewport
+        # instead of re-cropping the source on every wheel tick.
+        self._proxy_pil = None
+        self._proxy_zoom = 1.0
+        self._proxy_origin = (0.0, 0.0)
+        self._proxy_image_nw = (0.0, 0.0)
+        self._proxy_orig_size = (1, 1)
         self._drag_state = None
         self._interactive_render_job = None
         self._quality_render_job = None
@@ -547,6 +567,8 @@ class PhotoCuller(tk.Tk):
             # New photo: drop pan leftover from the previous image so the frame
             # cannot appear shifted to one side. Keep the old canvas item so the
             # slide animation has something to move.
+            self._cancel_zoom_anim()
+            self._proxy_pil = None
             self.pan_x = 0.0
             self.pan_y = 0.0
             reset_zoom = True
@@ -669,6 +691,7 @@ class PhotoCuller(tk.Tk):
             return
         self.fit_scale = new_fit
         self.zoom_scale = new_zoom
+        self._zoom_target = new_zoom
         self.pan_x = new_pan_x
         self.pan_y = new_pan_y
         frame = self.preview_engine.build_frame_sync(image, path_id, geometry, interactive)
@@ -791,6 +814,82 @@ class PhotoCuller(tk.Tk):
         self.preview_canvas.configure(
             cursor="fleur" if self.zoom_scale > self.fit_scale + 0.0001 else "arrow"
         )
+        self._capture_proxy(frame, geometry)
+
+    def _image_nw_on_canvas(self, zoom: float, pan_x: float, pan_y: float) -> tuple[float, float]:
+        """Canvas position of the full image's north-west corner (same as geometry)."""
+        canvas_w = max(self.preview_canvas.winfo_width(), 1)
+        canvas_h = max(self.preview_canvas.winfo_height(), 1)
+        orig_w, orig_h = self._original_dims()
+        left = canvas_w / 2 + pan_x - orig_w * zoom / 2
+        top = canvas_h / 2 + pan_y - orig_h * zoom / 2
+        return left, top
+
+    def _capture_proxy(self, frame, geometry) -> None:
+        """Store viewport bitmap + geometry snapshot for interactive zoom."""
+        if self._zoom_gesture and self._proxy_pil is not None:
+            return
+        try:
+            self._proxy_pil = frame.copy()
+        except Exception:
+            self._proxy_pil = None
+            return
+        self._proxy_zoom = self.zoom_scale
+        self._proxy_origin = (
+            float(geometry.origin[0]),
+            float(geometry.origin[1]),
+        )
+        self._proxy_orig_size = self._original_dims()
+        self._proxy_image_nw = self._image_nw_on_canvas(
+            self.zoom_scale, self.pan_x, self.pan_y
+        )
+
+    def _draw_proxy_zoom(self) -> bool:
+        """Place a scaled copy of the last viewport using the same pan/zoom
+        geometry as a real render.
+
+        Avoids the old dual-path (anchor-scale proxy vs pan-based geometry)
+        that made the picture wobble left/right while zooming in.
+        """
+        base = self._proxy_pil
+        if base is None or self.preview_image_item is None:
+            return False
+        if self._proxy_zoom <= 0:
+            return False
+        ratio = self.zoom_scale / self._proxy_zoom
+        # Mid-gesture we prefer staying on the proxy; only abandon if absurd.
+        if ratio > 4.0 or ratio < 0.25:
+            return False
+
+        canvas_w = max(self.preview_canvas.winfo_width(), 1)
+        canvas_h = max(self.preview_canvas.winfo_height(), 1)
+        new_w = max(1, int(round(base.width * ratio)))
+        new_h = max(1, int(round(base.height * ratio)))
+        if new_w > canvas_w * 4 or new_h > canvas_h * 4:
+            return False
+
+        if abs(ratio - 1.0) < 0.004:
+            scaled = base
+        else:
+            scaled = base.resize((new_w, new_h), Image.Resampling.NEAREST)
+
+        self.preview_photo = ImageTk.PhotoImage(scaled)
+        self.preview_canvas.itemconfigure(
+            self.preview_image_item, image=self.preview_photo
+        )
+
+        # Crop NW = image NW + (crop offset at capture) * zoom ratio.
+        # image NW comes from current pan/zoom — identical to real geometry.
+        img_nw = self._image_nw_on_canvas(self.zoom_scale, self.pan_x, self.pan_y)
+        crop_dx = self._proxy_origin[0] - self._proxy_image_nw[0]
+        crop_dy = self._proxy_origin[1] - self._proxy_image_nw[1]
+        new_x = img_nw[0] + crop_dx * ratio
+        new_y = img_nw[1] + crop_dy * ratio
+        self.preview_canvas.coords(self.preview_image_item, new_x, new_y)
+        self._preview_item_origin = (new_x, new_y)
+        self._preview_item_size = scaled.size
+        self._update_zoom_label()
+        return True
 
     def _start_slide_animation(
         self,
@@ -904,7 +1003,6 @@ class PhotoCuller(tk.Tk):
             self.after_cancel(self._slide_anim_job)
             self._slide_anim_job = None
             self._cleanup_slide_orphans()
-
     def _cleanup_slide_orphans(self) -> None:
         if self.preview_image_item is None:
             return
@@ -938,6 +1036,9 @@ class PhotoCuller(tk.Tk):
         image = self.current_source_image
         path_id = self.current_source_id
         if image is None or path_id is None:
+            return
+        # Skip quality frames mid-gesture; interactive ticks drive the zoom.
+        if self._zoom_gesture and not interactive:
             return
         try:
             geometry, new_fit, new_zoom, new_pan_x, new_pan_y = self._geometry(interactive)
@@ -1094,20 +1195,19 @@ class PhotoCuller(tk.Tk):
             return
         self.zoom_label.configure(text=f"{percent}%")
 
-    def _set_zoom(self, scale, anchor):
+    def _clamp_zoom(self, scale: float) -> float:
+        return max(self.fit_scale, min(4.0, float(scale)))
+
+    def _apply_zoom_now(self, scale: float, anchor) -> None:
+        """Jump zoom immediately (fit / 100% / drag). Anchor keeps a canvas point fixed."""
         if self.current_source_image is None:
             return
-        # Zooming past fit needs original pixels for a sharp 100% inspect.
-        if scale > self.fit_scale + 0.05 and self._needs_full_resolution():
-            self._request_full_resolution(after="scale", scale=scale)
-            return
-        image = self.current_source_image
         orig_w, orig_h = self._original_dims()
         canvas_width = max(self.preview_canvas.winfo_width(), 1)
         canvas_height = max(self.preview_canvas.winfo_height(), 1)
         self._constrain_pan_now()
         old_scale = self.zoom_scale
-        new_scale = max(self.fit_scale, min(4.0, scale))
+        new_scale = self._clamp_zoom(scale)
         if abs(new_scale - old_scale) < 1e-06:
             return
         if anchor is not None:
@@ -1123,10 +1223,89 @@ class PhotoCuller(tk.Tk):
                 anchor_y - source_y * new_scale - canvas_height / 2 + orig_h * new_scale / 2
             )
         self.zoom_scale = new_scale
+        self._zoom_target = new_scale
         self._pending_reset_zoom = False
-        self._schedule_preview_render()
+
+    def _set_zoom(self, scale, anchor):
+        """Smooth (stepless) zoom toward *scale*, keeping *anchor* fixed on screen."""
+        if self.current_source_image is None:
+            return
+        target = self._clamp_zoom(scale)
+        self._zoom_anchor = anchor
+        self._zoom_target = target
+        self._zoom_gesture = True
+        if self._zoom_settle_job is not None:
+            self.after_cancel(self._zoom_settle_job)
+            self._zoom_settle_job = None
+        # Tiny change: apply immediately.
+        if abs(target - self.zoom_scale) < 1e-5:
+            self._zoom_gesture = False
+            return
+        self._start_zoom_anim()
+
+    def _start_zoom_anim(self) -> None:
+        if self._zoom_anim_job is not None:
+            return
+        # after_idle keeps the gesture on the tightest event-loop cadence.
+        self._zoom_anim_job = self.after_idle(self._tick_zoom_anim)
+
+    def _tick_zoom_anim(self) -> None:
+        self._zoom_anim_job = None
+        if self.current_source_image is None:
+            self._zoom_gesture = False
+            return
+        current = self.zoom_scale
+        target = self._zoom_target
+        delta = target - current
+        if abs(delta) <= max(abs(target) * ZOOM_SETTLE_RATIO, 1e-5):
+            self._apply_zoom_now(target, self._zoom_anchor)
+            self._pending_reset_zoom = False
+            # Refresh proxy from this sharp frame (not a late quality job).
+            self._proxy_pil = None
+            self._render_preview_now(interactive=True)
+            self._zoom_gesture = False
+            self._schedule_zoom_settle()
+            return
+        # Nearly 1:1 with the wheel; residual lerp only smooths the last pixels.
+        step = delta * ZOOM_LERP
+        if abs(delta) < 0.02:
+            step = delta
+        next_scale = self._clamp_zoom(current + step)
+        self._apply_zoom_now(next_scale, self._zoom_anchor)
+        # GIMP-style: scale the last viewport bitmap — no source re-crop.
+        # If the proxy is exhausted, refresh it once, then keep using it.
+        if not self._draw_proxy_zoom():
+            self._cancel_ui_render_jobs(cancel_slide=False)
+            self._proxy_pil = None
+            self._render_preview_now(interactive=True)
+        try:
+            self.preview_canvas.update_idletasks()
+        except tk.TclError:
+            pass
+        self._zoom_anim_job = self.after_idle(self._tick_zoom_anim)
+
+    def _schedule_zoom_settle(self) -> None:
+        """After the gesture stops: quality frame + optional full-res inspect."""
+        if self._zoom_settle_job is not None:
+            self.after_cancel(self._zoom_settle_job)
+        self._zoom_settle_job = self.after(
+            ZOOM_FULLRES_SETTLE_MS, self._on_zoom_settled
+        )
+
+    def _on_zoom_settled(self) -> None:
+        self._zoom_settle_job = None
+        if self.current_source_image is None:
+            return
+        if (
+            self.zoom_scale > self.fit_scale + ZOOM_FULLRES_MARGIN
+            and self._needs_full_resolution()
+        ):
+            self._request_full_resolution(after="scale", scale=self.zoom_scale)
+            return
+        self._schedule_preview_render(interactive=False, quality_delay=40)
 
     def zoom_fit(self):
+        self._cancel_zoom_anim()
         if self.current_source_image is None:
             return
         self._release_full_image()
@@ -1134,6 +1313,7 @@ class PhotoCuller(tk.Tk):
             return
         self.fit_scale = self._fit_scale_for_canvas()
         self.zoom_scale = self.fit_scale
+        self._zoom_target = self.fit_scale
         self.pan_x = 0.0
         self.pan_y = 0.0
         self._pending_reset_zoom = False
@@ -1142,6 +1322,7 @@ class PhotoCuller(tk.Tk):
         self._schedule_preview_render(interactive=False, quality_delay=80)
 
     def zoom_actual(self):
+        self._cancel_zoom_anim()
         if self.current_source_image is None and self.current_source_path is None:
             return
         if self._needs_full_resolution():
@@ -1151,6 +1332,7 @@ class PhotoCuller(tk.Tk):
             return
         self.fit_scale = self._fit_scale_for_canvas()
         self.zoom_scale = max(self.fit_scale, 1.0)
+        self._zoom_target = self.zoom_scale
         self.pan_x = 0.0
         self.pan_y = 0.0
         self._pending_reset_zoom = False
@@ -1166,22 +1348,53 @@ class PhotoCuller(tk.Tk):
             return
         self.zoom_fit()
 
+    def _zoom_base(self) -> float:
+        """Scale to multiply for the next wheel/key notch.
+
+        During a live gesture keep using the in-flight target; otherwise the
+        *displayed* zoom — never a stale 1.0 from init (that caused a huge
+        first-notch jump from fit to ~100%).
+        """
+        if self._zoom_gesture:
+            return self._zoom_target
+        return self.zoom_scale
+
     def zoom_step(self, direction):
         if self.current_source_image is None:
             return
-        factor = 1.25 if direction > 0 else 0.8
+        factor = ZOOM_KEY_FACTOR if direction > 0 else 1.0 / ZOOM_KEY_FACTOR
         center = (
             self.preview_canvas.winfo_width() / 2,
             self.preview_canvas.winfo_height() / 2,
         )
-        self._set_zoom(self.zoom_scale * factor, center)
+        self._set_zoom(self._zoom_base() * factor, center)
 
     def _preview_mouse_wheel(self, event):
         if self.current_source_image is None:
             return "break"
-        steps = 0 if event.delta == 0 else event.delta / 120
-        self._set_zoom(self.zoom_scale * 1.25 ** steps, (event.x, event.y))
+        steps = 0 if event.delta == 0 else event.delta / 120.0
+        if steps == 0:
+            return "break"
+        factor = ZOOM_WHEEL_FACTOR ** steps
+        self._set_zoom(self._zoom_base() * factor, (event.x, event.y))
         return "break"
+
+    def _cancel_zoom_anim(self) -> None:
+        self._zoom_gesture = False
+        if self._zoom_anim_job is not None:
+            try:
+                self.after_cancel(self._zoom_anim_job)
+            except tk.TclError:
+                pass
+            self._zoom_anim_job = None
+        if self._zoom_settle_job is not None:
+            try:
+                self.after_cancel(self._zoom_settle_job)
+            except tk.TclError:
+                pass
+            self._zoom_settle_job = None
+        self._zoom_target = self.zoom_scale
+        self._zoom_anchor = None
 
     def _preview_drag_start(self, event):
         if self.current_source_image is None:
@@ -1568,6 +1781,7 @@ class PhotoCuller(tk.Tk):
         self.image_loader.cancel_pending()
         self.preview_engine.cancel_all()
         self.thumbnail_service.cancel_pending()
+        self._cancel_zoom_anim()
         self._cancel_ui_render_jobs()
         if getattr(self, "_poll_job", None) is not None:
             try:
