@@ -2,6 +2,8 @@
 
 A fast photo-culling tool for Windows photography workflows. Open a folder, flip through shots, mark keep / unkeep, then copy the selected originals to another folder.
 
+License: [MIT](LICENSE)
+
 ## Features
 
 - **Fast browsing**: `←` / `→` (wraps at both ends) or click the thumbnail strip; previews render on a background pool with interactive + quality frames

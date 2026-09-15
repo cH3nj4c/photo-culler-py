@@ -4,6 +4,8 @@
 
 [English](README.en.md)
 
+License: [MIT](LICENSE)
+
 ## 功能特性
 
 - **快速浏览**：`←` / `→`（到头循环）或点击缩略图栏切换照片，切换带滑动过场；预览后台双帧渲染
@@ -126,6 +128,15 @@ PhotoCuller-source/
 - **内存探测**：`sysmem.py` 通过 `GlobalMemoryStatusEx` 读取物理内存，打开文件夹时重算缓存上限
 
 详见 [Photo Culler-实现说明.md](Photo%20Culler-%E5%AE%9E%E7%8E%B0%E8%AF%B4%E6%98%8E.md)。
+
+## 打包 / 安装
+
+```bat
+build_exe.bat          :: PyInstaller onedir → dist\PhotoCuller\Photo Culler.exe
+build_installer.bat    :: 生成一键安装程序 dist\Photo-Culler-Setup.exe
+```
+
+`Photo-Culler-Setup.exe` 会把程序装到 `%LOCALAPPDATA%\Programs\PhotoCuller`，并可创建桌面/开始菜单快捷方式。需要 Inno Setup 时也可用 `installer.iss` 自行编译。
 
 ## 测试
 

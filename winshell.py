@@ -9,14 +9,23 @@ from pathlib import Path
 
 
 def configure_bundled_tk_runtime() -> None:
-    """Point the packaged app at its own complete Tcl/Tk runtime before tkinter imports."""
+    """Point the packaged app at its own Tcl/Tk runtime before tkinter imports."""
     if not getattr(sys, "frozen", False):
         return
-    bundle = sys._MEIPASS
-    os.environ["TCL_LIBRARY"] = str(Path(bundle) / "tcl" / "tcl8.6")
-    os.environ["TK_LIBRARY"] = str(Path(bundle) / "tk" / "tk8.6")
-    if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(str(Path(bundle) / "bin"))
+    bundle = Path(sys._MEIPASS)
+    # Layouts: tcl/tcl8.6 (classic) or flat tcl8.6 next to the payload.
+    candidates = (
+        (bundle / "tcl" / "tcl8.6", bundle / "tcl" / "tk8.6", bundle / "bin"),
+        (bundle / "tcl8.6", bundle / "tk8.6", bundle / "DLLs"),
+        (bundle / "tcl8.6", bundle / "tk8.6", bundle),
+    )
+    for tcl_dir, tk_dir, bin_dir in candidates:
+        if tcl_dir.is_dir() and tk_dir.is_dir():
+            os.environ["TCL_LIBRARY"] = str(tcl_dir)
+            os.environ["TK_LIBRARY"] = str(tk_dir)
+            if hasattr(os, "add_dll_directory") and bin_dir.is_dir():
+                os.add_dll_directory(str(bin_dir))
+            return
 
 
 def enable_windows_high_dpi() -> bool:
