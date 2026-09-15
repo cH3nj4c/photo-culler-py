@@ -48,6 +48,7 @@ from preview_engine import (
     constrain_pan,
 )
 from app_icon import apply_window_icon
+from ram_frames import ActivePreviewRam
 from selection_store import load_selection, save_selection
 from sysmem import describe_cache_plan, recommend_jpeg_cache_limit
 from temp_cleanup import cleanup_on_exit
@@ -105,6 +106,8 @@ class PhotoCuller(tk.Tk):
         self._proxy_origin = (0.0, 0.0)
         self._proxy_image_nw = (0.0, 0.0)
         self._proxy_orig_size = (1, 1)
+        # Explicit RAM slots for the photo currently on the Stage.
+        self._ram = ActivePreviewRam()
         self._drag_state = None
         self._interactive_render_job = None
         self._quality_render_job = None
@@ -495,6 +498,7 @@ class PhotoCuller(tk.Tk):
         self._proxy_zoom = 1.0
         self._proxy_origin = (0.0, 0.0)
         self._proxy_image_nw = (0.0, 0.0)
+        self._ram.clear()
         self.current_source_image = None
         self.current_source_path = None
         self.current_source_id = None
@@ -811,6 +815,8 @@ class PhotoCuller(tk.Tk):
         self, path: Path, path_id: str, image, original_size: tuple[int, int]
     ) -> None:
         if self.current_source_id != path_id:
+            # Leaving the previous photo: drop its RAM slots immediately.
+            self._ram.clear()
             self.preview_engine.clear_levels()
             self.pan_x = 0.0
             self.pan_y = 0.0
@@ -827,6 +833,7 @@ class PhotoCuller(tk.Tk):
         self.current_source_id = path_id
         self._loading_path_id = None
         self._loading_full_path_id = None
+        self._ram.retain_preview(path_id, image, self._original_size)
 
     def _adopt_full_image(self, path: Path, path_id: str, image) -> None:
         # Full image has different pixel grid; drop preview pyramid levels.
@@ -839,12 +846,14 @@ class PhotoCuller(tk.Tk):
         self.current_source_id = path_id
         self._loading_path_id = None
         self._loading_full_path_id = None
+        self._ram.retain_full(path_id, image)
 
     def _release_full_image(self) -> None:
         """Drop the full-res working copy when returning to fit/preview mode."""
         if self._full_source_image is None:
             return
         self._full_source_image = None
+        self._ram.release_full()
         self._using_full_resolution = False
         if self._preview_source_image is not None:
             self.preview_engine.clear_levels()
@@ -1085,6 +1094,7 @@ class PhotoCuller(tk.Tk):
         except Exception:
             self._proxy_pil = None
             return
+        self._ram.retain_proxy(self._proxy_pil)
         self._proxy_zoom = self.zoom_scale
         self._proxy_origin = (
             float(geometry.origin[0]),
@@ -2071,6 +2081,8 @@ class PhotoCuller(tk.Tk):
         self._loading_full_path_id = None
         self._pending_full_zoom = None
         self._pending_full_scale = None
+        self._proxy_pil = None
+        self._ram.clear()
 
     # --- status / shutdown -----------------------------------------------
 
@@ -2098,6 +2110,12 @@ class PhotoCuller(tk.Tk):
         self.thumbnail_service.cancel_pending()
         self._cancel_zoom_anim()
         self._cancel_ui_render_jobs()
+        if self._thumb_rebuild_job is not None:
+            try:
+                self.after_cancel(self._thumb_rebuild_job)
+            except tk.TclError:
+                pass
+            self._thumb_rebuild_job = None
         if getattr(self, "_poll_job", None) is not None:
             try:
                 self.after_cancel(self._poll_job)
@@ -2112,6 +2130,7 @@ class PhotoCuller(tk.Tk):
             self.current_source_image = None
             self._preview_source_image = None
             self._full_source_image = None
+            self._ram.clear()
         except Exception:
             pass
         self.preview_engine.shutdown()
