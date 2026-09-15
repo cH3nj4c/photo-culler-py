@@ -6,6 +6,7 @@ import math
 import queue
 import tkinter as tk
 from pathlib import Path
+from threading import Thread
 from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
@@ -36,7 +37,7 @@ from domain import (
     next_pair_mode,
     normalize_pair_mode,
     pair_mode_label,
-    scan_photo_entries,
+    scan_photo_tree,
 )
 from export_service import ExportService
 from image_loader import ImageLoader
@@ -124,6 +125,11 @@ class PhotoCuller(tk.Tk):
         self.thumbnail_cache = {}
         self._resize_job = None
         self._status_note = ""
+        self._scan_events: queue.Queue = queue.Queue()
+        self._scan_generation = 0
+        self._scan_cancel = False
+        self._scan_active = False
+        self._pending_scan_folder: Path | None = None
 
         self._make_style()
         self._build_ui()
@@ -423,16 +429,85 @@ class PhotoCuller(tk.Tk):
         if not chosen:
             return
         folder = Path(chosen)
-        try:
-            entries = scan_photo_entries(folder)
-        except OSError as exc:
-            messagebox.showerror(APP_NAME, f"无法读取这个文件夹：\n{exc}")
-            return
 
+        # Cancel any in-flight tree walk from a previous folder choice.
+        self._scan_cancel = True
         self._reset_session_caches()
         cache_limit = self.jpeg_cache.retune_from_system_memory()
 
         self.folder = folder
+        self.folder_label.configure(text=folder.name if folder.name else str(folder))
+        self.all_items = []
+        self.index = 0
+        self._invalidate_visible()
+        self.kept = set()
+        self.pair_modes = {}
+        self._update_keep_mode_ui()
+        self._render_thumbnails()
+        self._set_status(
+            f"正在扫描文件夹…    {describe_cache_plan(cache_limit)}    "
+            f"{self.preview_engine.describe_resample_backend()}"
+        )
+        self.zoom_label.configure(text="—")
+
+        self._scan_generation += 1
+        generation = self._scan_generation
+        self._scan_cancel = False
+        self._scan_active = True
+        self._pending_scan_folder = folder
+
+        def should_cancel() -> bool:
+            return self._scan_cancel or generation != self._scan_generation
+
+        def on_progress(found_n: int, dirs_n: int, errors_n: int) -> None:
+            self._scan_events.put((generation, "progress", found_n, dirs_n, errors_n))
+
+        def work() -> None:
+            try:
+                entries, dirs_visited, errors = scan_photo_tree(
+                    folder,
+                    on_progress=on_progress,
+                    should_cancel=should_cancel,
+                )
+                self._scan_events.put(
+                    (generation, "done", entries, dirs_visited, errors, None)
+                )
+            except Exception as exc:
+                self._scan_events.put((generation, "done", [], 0, 0, exc))
+
+        Thread(target=work, name="photo-culler-scan", daemon=True).start()
+
+    def _handle_scan_events(self) -> None:
+        latest_progress = None
+        terminal = None
+        try:
+            while True:
+                event = self._scan_events.get_nowait()
+                if event[0] != self._scan_generation:
+                    continue
+                if event[1] == "progress":
+                    latest_progress = event
+                elif event[1] == "done":
+                    terminal = event
+        except queue.Empty:
+            pass
+
+        if latest_progress is not None:
+            _, _kind, found_n, dirs_n, errors_n = latest_progress
+            extra = f" · 异常 {errors_n}" if errors_n else ""
+            self._set_status(f"正在扫描… 已发现 {found_n} 个文件 · 已访问 {dirs_n} 个目录{extra}")
+
+        if terminal is None:
+            return
+
+        generation, _kind, entries, dirs_visited, errors, error = terminal
+        self._scan_active = False
+        folder = self._pending_scan_folder or self.folder
+        if error is not None or folder is None:
+            messagebox.showerror(APP_NAME, f"无法读取这个文件夹：\n{error}")
+            return
+
+        # Atomic replace: one complete snapshot for thumbs / nav / preload.
         mtime_ns_by_path = {str(path): mtime_ns for path, mtime_ns in entries}
         self.all_items = build_photo_groups(
             [path for path, _mtime in entries], mtime_ns_by_path
@@ -450,20 +525,25 @@ class PhotoCuller(tk.Tk):
             if key in pair_keys and mode in {"both", "jpg", "raw"}
         }
         self._invalidate_visible()
-        self.folder_label.configure(text=folder.name if folder.name else str(folder))
 
+        cache_limit = self.jpeg_cache.limit
         if not self.all_items:
-            # Quiet empty state — no modal-style “unsupported folder” banner.
             self._update_keep_mode_ui()
             self._render_thumbnails()
+            note = f"    · 异常 {errors}" if errors else ""
             self._set_status(
-                f"0 张照片    支持 JPG、PNG、TIFF 及主流相机 RAW    "
+                f"0 张照片 · 目录 {dirs_visited}{note}    "
+                f"支持 JPG、PNG、TIFF 及主流相机 RAW    "
                 f"{describe_cache_plan(cache_limit)}    "
                 f"{self.preview_engine.describe_resample_backend()}"
             )
             self.zoom_label.configure(text="—")
             return
         self._show_current(center=True)
+        if errors:
+            self._status_note = f"扫描完成，{errors} 项读取异常"
+        else:
+            self._status_note = ""
 
     def change_index(self, direction: int) -> None:
         items = self.visible_items
@@ -1082,6 +1162,7 @@ class PhotoCuller(tk.Tk):
 
     def _poll_services(self) -> None:
         try:
+            self._handle_scan_events()
             self._handle_image_load_events()
             self._handle_preview_events()
             self._handle_preload_events()
@@ -1806,6 +1887,8 @@ class PhotoCuller(tk.Tk):
     def _on_close(self):
         """Stop background workers and drop temp files before Tk tears down."""
         self.export_service.cancel()
+        self._scan_cancel = True
+        self._scan_generation += 1
         self.preloader.invalidate()
         self.image_loader.cancel_pending()
         self.preview_engine.cancel_all()

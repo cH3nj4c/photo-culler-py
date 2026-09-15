@@ -21,7 +21,7 @@ A fast photo-culling tool for Windows photography workflows. Open a folder, flip
 | `.png` / `.tif` / `.tiff` | Decoded as needed |
 | `.dng` `.cr2` `.cr3` `.nef` `.nrw` `.arw` `.srf` `.sr2` `.orf` `.rw2` `.raf` `.pef` `.raw` `.rwl` `.3fr` `.fff` `.mrw` `.erf` `.dcr` `.kdc` `.mos` `.iiq` | Camera RAW via LibRaw; embedded preview first; full postprocess for 100% |
 
-Only the top level of the chosen folder is scanned (no recursion into subfolders).
+The chosen folder and its **ordinary subfolders** are scanned recursively (symlinks/junctions are not followed). The walk uses `os.scandir` + an explicit directory stack on a background thread; results are sorted by relative path and swapped in as one snapshot.
 
 ## Requirements
 

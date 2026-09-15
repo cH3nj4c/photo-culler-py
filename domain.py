@@ -132,30 +132,83 @@ def _single_group(path: Path, mtime_ns: int = 0) -> PhotoGroup:
 
 
 def scan_photo_entries(folder: Path) -> list[tuple[Path, int]]:
-    """List supported photos with mtime in one directory enumeration pass.
-
-    ``os.scandir`` keeps the directory metadata returned by Windows; on NTFS
-    ``entry.stat()`` is usually free (no extra network/disk round-trip).
-    """
-    found: list[tuple[Path, int]] = []
-    with os.scandir(folder) as entries:
-        for entry in entries:
-            if not entry.is_file():
-                continue
-            if Path(entry.name).suffix.casefold() not in SUPPORTED_EXTENSIONS:
-                continue
-            try:
-                mtime_ns = entry.stat().st_mtime_ns
-            except OSError:
-                mtime_ns = 0
-            found.append((Path(entry.path), mtime_ns))
-    found.sort(key=lambda pair: pair[0].name.casefold())
+    """Recursive scan of *folder* and ordinary subfolders (one snapshot)."""
+    found, _dirs, _errors = scan_photo_tree(folder)
     return found
 
 
 def scan_photo_paths(folder: Path) -> list[Path]:
-    """List supported photos with one directory enumeration pass."""
+    """List supported photos under *folder* (including subfolders)."""
     return [path for path, _mtime in scan_photo_entries(folder)]
+
+
+def scan_photo_tree(
+    root: Path,
+    on_progress=None,
+    should_cancel=None,
+) -> tuple[list[tuple[Path, int]], int, int]:
+    """Walk *root* with an explicit directory stack (no Python recursion).
+
+    Returns ``(entries, dirs_visited, error_count)``; each entry is
+    ``(path, mtime_ns)`` sorted by path relative to *root* (case-insensitive).
+
+    - ``os.scandir`` supplies file/dir types from the listing.
+    - Does not follow symlink or junction/reparse directories.
+    - Failures increment the error count and the walk continues.
+    - ``on_progress(found, dirs_visited, errors)`` runs on the scanner thread.
+    - ``should_cancel() -> bool`` aborts the walk early.
+    """
+    root = Path(root)
+    found: list[tuple[Path, int]] = []
+    dirs_visited = 0
+    errors = 0
+    stack: list[Path] = [root]
+    supported = SUPPORTED_EXTENSIONS
+
+    while stack:
+        if should_cancel is not None and should_cancel():
+            break
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        # Never follow links: stay inside the chosen root.
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        if Path(entry.name).suffix.casefold() not in supported:
+                            continue
+                        try:
+                            mtime_ns = entry.stat(follow_symlinks=False).st_mtime_ns
+                        except OSError:
+                            mtime_ns = 0
+                        found.append((Path(entry.path), mtime_ns))
+                    except OSError:
+                        errors += 1
+        except OSError:
+            errors += 1
+            continue
+        dirs_visited += 1
+        if on_progress is not None:
+            try:
+                on_progress(len(found), dirs_visited, errors)
+            except Exception:
+                pass
+
+    def rel_key(pair: tuple[Path, int]) -> str:
+        path = pair[0]
+        try:
+            return str(path.relative_to(root)).casefold()
+        except ValueError:
+            return path.name.casefold()
+
+    found.sort(key=rel_key)
+    return found, dirs_visited, errors
 
 
 def filter_visible_items(

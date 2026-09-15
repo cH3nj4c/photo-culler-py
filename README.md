@@ -22,7 +22,7 @@
 | `.png` / `.tif` / `.tiff` | 按需解码 |
 | 相机 RAW | 经 rawpy/LibRaw：DNG、CR2/CR3、NEF/NRW、ARW/SR2、ORF、RW2、RAF、PEF、3FR、MRW、ERF、DCR、KDC、MOS、IIQ 等；优先内嵌预览，100% 再全像素解码 |
 
-仅扫描文件夹第一层，不递归子目录。
+仅扫描所选文件夹及其**普通子文件夹**（不递归符号链接/junction，避免环与越界）。扫描在后台线程用目录栈完成，不递归解码；结束后按相对路径排序并一次性替换照片列表。
 
 ## 安装
 

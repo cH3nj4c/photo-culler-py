@@ -188,6 +188,33 @@ assert not _is_app_temp_name("important_user_data")
 assert not _is_app_temp_name("Photography")
 print("[1i] temp cleanup name filter OK")
 
+# --- 1j. recursive tree scan ---
+from domain import scan_photo_tree
+
+tree = tmp / "tree"
+(tree / "a" / "b").mkdir(parents=True)
+(tree / "a" / "x.jpg").write_bytes(b"j")
+(tree / "a" / "b" / "y.PNG").write_bytes(b"p")
+(tree / "z.tif").write_bytes(b"t")
+(tree / "a" / "note.txt").write_bytes(b"n")
+# symlink / junction should be skipped when creatable
+try:
+    import os as _os
+
+    _os.symlink(tree / "a", tree / "link_a", target_is_directory=True)
+except OSError:
+    pass
+entries, dirs_n, errors_n = scan_photo_tree(tree)
+names = [p.relative_to(tree).as_posix() for p, _m in entries]
+assert "z.tif" in names
+assert "a/x.jpg" in names
+assert "a/b/y.PNG" in names
+assert not any("note.txt" in n for n in names)
+assert not any(n.startswith("link_a") for n in names), names
+assert dirs_n >= 3
+assert errors_n == 0
+print("[1j] recursive scan OK:", names)
+
 # --- 1g. async thumbnail service ---
 from thumbnail_service import ThumbnailService
 
