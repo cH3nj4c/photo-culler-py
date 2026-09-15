@@ -64,7 +64,7 @@ class PhotoCuller(tk.Tk):
         self.title(APP_NAME)
         apply_window_icon(self)
         self._configure_dpi_layout()
-        self.configure(bg="#17191d")
+        self.configure(bg="#171A1F")
 
         # Folder session / selection state.
         self.folder: Path | None = None
@@ -126,6 +126,7 @@ class PhotoCuller(tk.Tk):
 
         self.thumbnail_cache = {}
         self._resize_job = None
+        self._thumb_rebuild_job = None
         self._status_note = ""
         self._scan_events: queue.Queue = queue.Queue()
         self._scan_generation = 0
@@ -137,8 +138,18 @@ class PhotoCuller(tk.Tk):
         self._build_ui()
         self._bind_keys()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Configure>", self._on_window_configure, add="+")
         self._poll_job = self.after(PREVIEW_POLL_MS, self._poll_services)
         self.after(250, self.open_folder)
+
+    def _on_window_configure(self, _event=None) -> None:
+        if self.folder is None:
+            return
+        try:
+            name = self.folder.name if self.folder.name else str(self.folder)
+            self.folder_label.configure(text=self._fit_folder_label(name))
+        except tk.TclError:
+            pass
 
     # --- layout / chrome -------------------------------------------------
 
@@ -155,7 +166,7 @@ class PhotoCuller(tk.Tk):
         width = min(self._px(1280), int(screen_width * 0.94))
         height = min(self._px(820), int(screen_height * 0.88))
         self.geometry(f"{width}x{height}")
-        self.minsize(min(self._px(880), screen_width), min(self._px(620), screen_height))
+        self.minsize(min(self._px(920), screen_width), min(self._px(620), screen_height))
 
     def _px(self, logical_pixels: int) -> int:
         return max(1, round(logical_pixels * self.ui_scale))
@@ -163,80 +174,99 @@ class PhotoCuller(tk.Tk):
     def _make_style(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure("App.TFrame", background="#17191d")
-        style.configure("Toolbar.TFrame", background="#202329")
-        style.configure("App.TLabel", background="#17191d", foreground="#e7e9ed")
-        style.configure("Muted.TLabel", background="#17191d", foreground="#a8adb7")
+        # Zones: chrome #171A1F · stage #0E1014 · filmstrip #1C2027 · accent #4f9cff
+        style.configure("App.TFrame", background="#171A1F")
+        style.configure("Toolbar.TFrame", background="#171A1F")
+        style.configure("App.TLabel", background="#171A1F", foreground="#E8EAED")
+        style.configure("Muted.TLabel", background="#171A1F", foreground="#8B939E")
         style.configure(
-            "Header.TLabel", background="#202329", foreground="#e7e9ed",
+            "Hint.TLabel",
+            background="#14171C",
+            foreground="#8B939E",
+            font=("Segoe UI", 9),
+            padding=(16, 5),
+        )
+        style.map("Hint.TLabel", foreground=[("active", "#c5ccd6")])
+        style.configure(
+            "Header.TLabel", background="#171A1F", foreground="#E8EAED",
+            font=("Segoe UI", 11, "bold"),
+        )
+        style.configure(
+            "Zoom.TLabel", background="#171A1F", foreground="#4f9cff",
             font=("Segoe UI", 10, "bold"),
         )
         style.configure(
-            "Zoom.TLabel", background="#202329", foreground="#8bd7ff",
-            font=("Segoe UI", 10, "bold"),
-        )
-        style.configure(
-            "App.TCheckbutton", background="#202329", foreground="#e7e9ed",
+            "App.TCheckbutton", background="#171A1F", foreground="#E8EAED",
             font=("Segoe UI", 10),
         )
         style.map(
             "App.TCheckbutton",
-            background=[("active", "#202329")],
+            background=[("active", "#171A1F")],
             foreground=[("active", "#ffffff")],
         )
 
     def _build_ui(self) -> None:
-        toolbar = ttk.Frame(self, style="Toolbar.TFrame", padding=(16, 10))
+        toolbar = ttk.Frame(self, style="Toolbar.TFrame", padding=(14, 8))
         toolbar.pack(fill="x")
 
-        # Left: current folder only. All action controls live on the right.
+        # Left: folder identity (truncated on narrow windows).
         self.folder_label = ttk.Label(toolbar, text="尚未打开文件夹", style="Header.TLabel")
-        self.folder_label.pack(side="left", padx=(0, 12))
+        self.folder_label.pack(side="left", padx=(0, 10))
 
-        # pack(side="right") stacks right-to-left, so declare last visual first.
-        RoundedButton(
-            toolbar, text="导出保留照片  E", command=self.export_kept
-        ).pack(side="right")
-        RoundedButton(
-            toolbar, text="100%  1", command=self.zoom_actual
-        ).pack(side="right", padx=(0, 6))
-        RoundedButton(
-            toolbar, text="适合屏幕  Z", command=self.zoom_fit
-        ).pack(side="right", padx=(0, 6))
-        self.zoom_label = ttk.Label(toolbar, text="适合屏幕", style="Zoom.TLabel")
-        self.zoom_label.pack(side="right", padx=(0, 12))
+        def sep() -> None:
+            tk.Frame(toolbar, width=1, bg="#2A303A", highlightthickness=0).pack(
+                side="right", fill="y", padx=7, pady=5
+            )
+
+        # pack(side="right") stacks right-to-left — declare last visual first.
+        self._more_button = RoundedButton(toolbar, text="⋯", command=self._show_more_menu)
+        self._more_button.pack(side="right", padx=(0, 2))
+
+        sep()
+        RoundedButton(toolbar, text="导出", command=self.export_kept).pack(
+            side="right", padx=(0, 4)
+        )
+
+        sep()
+        RoundedButton(toolbar, text="100%", command=self.zoom_actual).pack(
+            side="right", padx=(0, 4)
+        )
+        RoundedButton(toolbar, text="适合", command=self.zoom_fit).pack(
+            side="right", padx=(0, 4)
+        )
+
+        sep()
         RoundedToggle(
             toolbar, text="只看保留", variable=self.show_kept_only, command=self.toggle_filter
-        ).pack(side="right", padx=(0, 10))
-        RoundedButton(
-            toolbar, text="重置模式", command=self.reset_all_pair_modes
-        ).pack(side="right", padx=(0, 6))
-        RoundedButton(
-            toolbar, text="全不保留", command=self.clear_all_kept
-        ).pack(side="right", padx=(0, 6))
-        self.keep_mode_button = RoundedButton(
-            toolbar, text="模式：单文件", command=self.cycle_keep_mode
-        )
-        self.keep_mode_button.pack(side="right", padx=(0, 6))
-        RoundedButton(
-            toolbar, text="删除  Del", command=self.delete_current, danger=True
-        ).pack(side="right", padx=(0, 6))
-        RoundedButton(
-            toolbar, text="保留 / 取消  Space", command=self.toggle_keep, accent=True
-        ).pack(side="right", padx=(0, 6))
-        RoundedButton(
-            toolbar, text="打开照片文件夹  O", command=self.open_folder
         ).pack(side="right", padx=(0, 6))
 
-        self.preview_frame = tk.Frame(self, bg="#111317", highlightthickness=0)
-        self.preview_frame.pack(fill="both", expand=True, padx=16, pady=(16, 8))
+        sep()
+        self.keep_mode_button = RoundedButton(
+            toolbar, text="模式", command=self.cycle_keep_mode
+        )
+        self.keep_mode_button.pack(side="right", padx=(0, 4))
+        RoundedButton(
+            toolbar, text="删除", command=self.delete_current, danger=True
+        ).pack(side="right", padx=(0, 4))
+        RoundedButton(
+            toolbar, text="保留", command=self.toggle_keep, accent=True
+        ).pack(side="right", padx=(0, 4))
+
+        sep()
+        RoundedButton(toolbar, text="打开", command=self.open_folder).pack(
+            side="right", padx=(0, 4)
+        )
+
+        self.preview_frame = tk.Frame(self, bg="#0E1014", highlightthickness=0)
+        self.preview_frame.pack(fill="both", expand=True, padx=0, pady=(0, 0))
         self.preview_canvas = tk.Canvas(
-            self.preview_frame, bg="#111317", highlightthickness=0, cursor="arrow"
+            self.preview_frame, bg="#0E1014", highlightthickness=0, cursor="arrow"
         )
         self.preview_canvas.pack(fill="both", expand=True)
         self.preview_canvas.create_text(
-            0, 0, text="打开一个照片文件夹开始选片",
-            fill="#bdc3cd", font=("Segoe UI", 16), tags="preview-message",
+            0, 0,
+            text="打开一个照片文件夹开始选片",
+            fill="#E8EAED", font=("Segoe UI", 16), tags="preview-message",
         )
         self.preview_canvas.bind("<Configure>", self._queue_preview_resize)
         self.preview_canvas.bind("<MouseWheel>", self._preview_mouse_wheel)
@@ -244,34 +274,93 @@ class PhotoCuller(tk.Tk):
         self.preview_canvas.bind("<B1-Motion>", self._preview_drag_motion)
         self.preview_canvas.bind("<ButtonRelease-1>", self._preview_drag_end)
 
-        info = ttk.Frame(self, style="App.TFrame", padding=(18, 5))
+        # Status: left keep/mode · right preload + zoom (two poles, short copy).
+        info = ttk.Frame(self, style="App.TFrame", padding=(16, 3))
         info.pack(fill="x")
         self.status_label = ttk.Label(info, text="", style="App.TLabel")
         self.status_label.pack(side="left")
+        self.zoom_label = ttk.Label(info, text="—", style="Zoom.TLabel")
+        self.zoom_label.pack(side="right")
         self.preload_label = ttk.Label(info, text="", style="Muted.TLabel")
-        self.preload_label.pack(side="left", padx=(18, 0))
-        self.help_label = ttk.Label(
-            info,
-            text="← → 切换 · Space 保留 · F 模式 · Del 删除 · 滚轮缩放 · Z 适合/100% · + − 微调 · 导出中按 Esc 取消",
-            style="Muted.TLabel",
-        )
-        self.help_label.pack(side="right")
+        self.preload_label.pack(side="right", padx=(0, 14))
 
-        thumbs_container = tk.Frame(self, bg="#202329", height=self._px(132))
-        thumbs_container.pack(fill="x", padx=16, pady=(0, 16))
+        # Operation hint strip — always visible, click or F1 for the full list.
+        hint_text = (
+            "← → 切换    Space 保留    Del 删除    F 模式    "
+            "滚轮缩放    Z 适合 / 100%    Esc 取消导出    "
+        )
+        self.hint_bar = ttk.Label(
+            self,
+            text=hint_text,
+            style="Hint.TLabel",
+            cursor="hand2",
+            anchor="w",
+        )
+        self.hint_bar.pack(fill="x", padx=14, pady=(0, 6))
+        self.hint_bar.bind("<Button-1>", lambda _e: self._show_shortcuts())
+
+        # Full-bleed filmstrip (slightly lighter chrome than the toolbar).
+        thumbs_container = tk.Frame(self, bg="#1C2027", height=self._px(132))
+        thumbs_container.pack(fill="x", padx=0, pady=(0, 0))
         thumbs_container.pack_propagate(False)
         self.thumb_canvas = tk.Canvas(
-            thumbs_container, bg="#202329", highlightthickness=0, height=self._px(132)
+            thumbs_container, bg="#1C2027", highlightthickness=0, height=self._px(120)
         )
         self.thumb_scrollbar = ttk.Scrollbar(
-            thumbs_container, orient="horizontal", command=self.thumb_canvas.xview
+            thumbs_container, orient="horizontal", command=self._thumb_xview
         )
-        self.thumb_canvas.configure(xscrollcommand=self.thumb_scrollbar.set)
+        self.thumb_canvas.configure(xscrollcommand=self._thumb_xscrollcommand)
         self.thumb_canvas.pack(fill="both", expand=True)
         self.thumb_scrollbar.pack(fill="x")
         self.thumb_canvas.bind("<Button-1>", self._thumbnail_clicked)
         self.thumb_canvas.bind("<MouseWheel>", self._scroll_thumbnails)
+        self.thumb_canvas.bind(
+            "<Enter>", lambda _e: self.thumb_canvas.focus_set()
+        )
         self.thumb_canvas.bind("<Configure>", lambda _event: self._render_thumbnails())
+
+    def _show_more_menu(self) -> None:
+        menu = tk.Menu(self, tearoff=0, bg="#2a2f38", fg="#e7e9ed", activebackground="#3a4250")
+        menu.add_command(label="全部不保留", command=self.clear_all_kept)
+        menu.add_command(label="重置所有 RAW/JPG 模式", command=self.reset_all_pair_modes)
+        menu.add_separator()
+        menu.add_command(label="快捷键说明", command=self._show_shortcuts)
+        try:
+            x = self._more_button.winfo_rootx()
+            y = self._more_button.winfo_rooty() + self._more_button.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _show_shortcuts(self) -> None:
+        messagebox.showinfo(
+            APP_NAME,
+            "选片\n"
+            "  ← →     上一张 / 下一张（循环）\n"
+            "  Space   保留 / 取消保留\n"
+            "  F       切换 RAW+JPG 导出模式\n"
+            "  Del     删除当前组（回收站）\n\n"
+            "文件\n"
+            "  O       打开文件夹\n"
+            "  E       导出保留照片\n"
+            "  Esc     取消导出\n\n"
+            "查看\n"
+            "  滚轮    无极缩放（锚点跟随鼠标）\n"
+            "  Z / 1   适合屏幕 / 100%\n"
+            "  + / −   放大 / 缩小\n"
+            "  拖拽    放大后平移\n\n"
+            "批量\n"
+            "  Ctrl+Shift+X   全部不保留\n"
+            "  Ctrl+Shift+M   重置所有模式\n\n"
+            "F1 或 ？ 可再次打开本说明",
+        )
+
+    def _fit_folder_label(self, text: str) -> str:
+        """Truncate folder name so the right toolbar keeps room on narrow windows."""
+        max_chars = max(12, int(self.winfo_width() / 28)) if self.winfo_width() > 1 else 28
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 1] + "…"
 
     def _bind_keys(self) -> None:
         self.bind_all("<Left>", lambda _e: self.change_index(-1))
@@ -294,6 +383,10 @@ class PhotoCuller(tk.Tk):
         self.bind_all("<KP_Subtract>", lambda _e: self.zoom_step(-1))
         self.bind_all("<Control-Shift-x>", self._on_clear_all_shortcut)
         self.bind_all("<Control-Shift-m>", self._on_reset_modes_shortcut)
+        self.bind_all("<F1>", self._on_help_key)
+        self.bind_all("<question>", self._on_help_key)
+        # Filmstrip wheel even when focus is elsewhere (pointer-over routing).
+        self.bind_all("<MouseWheel>", self._global_wheel, add="+")
 
     def _on_space(self, event: tk.Event) -> str:
         widget = event.widget
@@ -327,6 +420,10 @@ class PhotoCuller(tk.Tk):
         if isinstance(widget, RoundedButton):
             return "break"
         self.delete_current()
+        return "break"
+
+    def _on_help_key(self, _event: tk.Event) -> str:
+        self._show_shortcuts()
         return "break"
 
     def _on_escape(self, _event: tk.Event) -> str:
@@ -371,12 +468,10 @@ class PhotoCuller(tk.Tk):
     def _update_keep_mode_ui(self) -> None:
         item = self.current_item
         if item is not None and item.paired_raw_jpeg:
-            self.keep_mode_button.configure(
-                text=f"模式：{pair_mode_label(self._pair_mode(item))}  F"
-            )
+            self.keep_mode_button.configure(text=pair_mode_label(self._pair_mode(item)))
             self.keep_mode_button.state(["!disabled"])
             return
-        self.keep_mode_button.configure(text="模式：单文件  F")
+        self.keep_mode_button.configure(text="模式")
         self.keep_mode_button.state(["disabled"])
 
     def _save_selection(self) -> None:
@@ -438,7 +533,9 @@ class PhotoCuller(tk.Tk):
         cache_limit = self.jpeg_cache.retune_from_system_memory()
 
         self.folder = folder
-        self.folder_label.configure(text=folder.name if folder.name else str(folder))
+        self.folder_label.configure(
+            text=self._fit_folder_label(folder.name if folder.name else str(folder))
+        )
         self.all_items = []
         self.index = 0
         self._invalidate_visible()
@@ -609,7 +706,10 @@ class PhotoCuller(tk.Tk):
         if self.visible_items:
             self._show_current(center=True, reset_zoom=False)
             return
-        self._show_preview_message("打开一个照片文件夹开始选片")
+        self._show_preview_message(
+            "打开一个照片文件夹开始选片",
+            hint="按 O 或点上方「打开」·  ← → 切换 · Space 保留 · F1 查看全部快捷键",
+        )
         self._update_keep_mode_ui()
         self._render_thumbnails()
 
@@ -825,6 +925,50 @@ class PhotoCuller(tk.Tk):
             interactive=interactive,
         )
 
+    def _draw_stage_chrome(self) -> None:
+        """Signature: viewfinder corners + index badge on the preview stage."""
+        try:
+            self.preview_canvas.delete("stage-chrome")
+        except tk.TclError:
+            return
+        if self.current_source_image is None and self.current_item is None:
+            return
+        w = max(self.preview_canvas.winfo_width(), 2)
+        h = max(self.preview_canvas.winfo_height(), 2)
+        m = self._px(12)
+        arm = self._px(18)
+        color = "#4f9cff"
+        width = 2
+        # Four corner marks (camera viewfinder).
+        segments = [
+            (m, m, m + arm, m), (m, m, m, m + arm),
+            (w - m, m, w - m - arm, m), (w - m, m, w - m, m + arm),
+            (m, h - m, m + arm, h - m), (m, h - m, m, h - m - arm),
+            (w - m, h - m, w - m - arm, h - m), (w - m, h - m, w - m, h - m - arm),
+        ]
+        for x1, y1, x2, y2 in segments:
+            self.preview_canvas.create_line(
+                x1, y1, x2, y2, fill=color, width=width, tags="stage-chrome"
+            )
+        # Index badge — large, top-left, like a camera frame counter.
+        items = self.visible_items
+        if items:
+            idx_txt = f"{self.index + 1} / {len(items)}"
+            x0, y0 = m + self._px(10), m + self._px(8)
+            self.preview_canvas.create_rectangle(
+                x0, y0,
+                x0 + self._px(96), y0 + self._px(32),
+                fill="#0E1014", outline="#2A303A", width=1, tags="stage-chrome",
+            )
+            self.preview_canvas.create_text(
+                x0 + self._px(48), y0 + self._px(16),
+                text=idx_txt,
+                fill="#E8EAED",
+                font=("Segoe UI", 14, "bold"),
+                tags="stage-chrome",
+            )
+        self.preview_canvas.tag_raise("stage-chrome")
+
     def _apply_preview_frame(self, frame, geometry) -> None:
         # A quality/viewport frame must not snap the gallery while a slide is running.
         if self._slide_anim_job is not None and self._slide_direction == 0:
@@ -898,6 +1042,7 @@ class PhotoCuller(tk.Tk):
             self._start_slide_animation(
                 previous_item, new_item, direction, travel, target_x, target_y
             )
+            self._draw_stage_chrome()
             return
 
         if self.preview_image_item is None:
@@ -920,6 +1065,7 @@ class PhotoCuller(tk.Tk):
             cursor="fleur" if self.zoom_scale > self.fit_scale + 0.0001 else "arrow"
         )
         self._capture_proxy(frame, geometry)
+        self._draw_stage_chrome()
 
     def _image_nw_on_canvas(self, zoom: float, pan_x: float, pan_y: float) -> tuple[float, float]:
         """Canvas position of the full image's north-west corner (same as geometry)."""
@@ -955,6 +1101,11 @@ class PhotoCuller(tk.Tk):
 
         Avoids the old dual-path (anchor-scale proxy vs pan-based geometry)
         that made the picture wobble left/right while zooming in.
+
+        这是交互缩放时的“临时加速渲染”路径：
+        - 直接使用上一帧的已渲染视口作为 base
+        - 只按当前 zoom_scale 与之前 proxy_zoom 的比例放大/缩小
+        - 这样可以在鼠标拖动缩放时保持更稳定的流畅度，不必每次都重新计算整张图
         """
         base = self._proxy_pil
         if base is None or self.preview_image_item is None:
@@ -962,8 +1113,8 @@ class PhotoCuller(tk.Tk):
         if self._proxy_zoom <= 0:
             return False
         ratio = self.zoom_scale / self._proxy_zoom
-        # Mid-gesture we prefer staying on the proxy; only abandon if absurd.
-        if ratio > 4.0 or ratio < 0.25:
+        # Stay on the proxy as long as possible; only abandon at extreme ratios.
+        if ratio > 6.0 or ratio < 0.18:
             return False
 
         canvas_w = max(self.preview_canvas.winfo_width(), 1)
@@ -1075,7 +1226,7 @@ class PhotoCuller(tk.Tk):
             self._slide_anim_job = None
             self._slide_prev_photo = None
 
-    def _show_preview_message(self, message: str) -> None:
+    def _show_preview_message(self, message: str, hint: str | None = None) -> None:
         self.preview_engine.cancel_all()
         self._cancel_ui_render_jobs()
         self.preview_photo = None
@@ -1091,17 +1242,38 @@ class PhotoCuller(tk.Tk):
             return
         width = max(self.preview_canvas.winfo_width(), 1)
         height = max(self.preview_canvas.winfo_height(), 1)
-        self.preview_canvas.create_text(
-            width / 2,
-            height / 2,
-            text=message,
-            fill="#bdc3cd",
-            font=("Segoe UI", 16),
-            justify="center",
-            tags="preview-message",
-        )
+        if hint:
+            self.preview_canvas.create_text(
+                width / 2,
+                height / 2 - 18,
+                text=message,
+                fill="#e7e9ed",
+                font=("Segoe UI", 16),
+                justify="center",
+                tags="preview-message",
+            )
+            self.preview_canvas.create_text(
+                width / 2,
+                height / 2 + 16,
+                text=hint,
+                fill="#8a93a0",
+                font=("Segoe UI", 10),
+                justify="center",
+                tags="preview-message",
+            )
+        else:
+            self.preview_canvas.create_text(
+                width / 2,
+                height / 2,
+                text=message,
+                fill="#bdc3cd",
+                font=("Segoe UI", 16),
+                justify="center",
+                tags="preview-message",
+            )
         self.preview_canvas.configure(cursor="arrow")
         self.zoom_label.configure(text="—")
+        self._draw_stage_chrome()
 
     def _cancel_ui_render_jobs(self, cancel_slide: bool = True) -> None:
         if self._interactive_render_job is not None:
@@ -1287,6 +1459,9 @@ class PhotoCuller(tk.Tk):
     # --- zoom / pan ------------------------------------------------------
 
     def _constrain_pan_now(self) -> None:
+        # 缩放后的图片不能被无限平移，否则会让图像离开画布。
+        # constrain_pan 会根据“图片尺寸 × 缩放倍率”与“画布尺寸”的关系计算可用范围，
+        # 把 pan_x / pan_y 锁定在合理区间内，避免越界拖动。
         if self.current_source_image is None:
             return
         orig_w, orig_h = self._original_dims()
@@ -1312,6 +1487,9 @@ class PhotoCuller(tk.Tk):
 
     def _apply_zoom_now(self, scale: float, anchor) -> None:
         """Jump zoom immediately (fit / 100% / drag). Anchor keeps a canvas point fixed."""
+        # 这个函数负责“直接应用缩放结果”，是图片放大/缩小的最终落点。
+        # anchor 是鼠标或手势停留的画布点；通过它可以保证“用户当前看着的那一块位置”
+        # 在缩放时尽量保持不动，避免图片在放大时跳到另一处。
         if self.current_source_image is None:
             return
         orig_w, orig_h = self._original_dims()
@@ -1324,6 +1502,7 @@ class PhotoCuller(tk.Tk):
             return
         if anchor is not None:
             anchor_x, anchor_y = anchor
+            # 先把“锚点在旧缩放下对应到原图上的坐标”，再按新缩放重新计算平移量。
             old_left = canvas_width / 2 + self.pan_x - orig_w * old_scale / 2
             old_top = canvas_height / 2 + self.pan_y - orig_h * old_scale / 2
             source_x = max(0.0, min(float(orig_w), (anchor_x - old_left) / old_scale))
@@ -1339,7 +1518,11 @@ class PhotoCuller(tk.Tk):
         self._pending_reset_zoom = False
 
     def _set_zoom(self, scale, anchor):
-        """Smooth (stepless) zoom toward *scale*, keeping *anchor* fixed on screen."""
+        """Wheel/key zoom: apply target immediately; only scale the viewport proxy.
+
+        Real crop+resample waits until the gesture settles — mid-gesture
+        `_render_preview_now` was what made zoom feel laggy.
+        """
         if self.current_source_image is None:
             return
         target = self._clamp_zoom(scale)
@@ -1347,59 +1530,31 @@ class PhotoCuller(tk.Tk):
         self._zoom_target = target
         self._zoom_gesture = True
         if self._zoom_settle_job is not None:
-            self.after_cancel(self._zoom_settle_job)
+            try:
+                self.after_cancel(self._zoom_settle_job)
+            except tk.TclError:
+                pass
             self._zoom_settle_job = None
-        # Tiny change: apply immediately.
         if abs(target - self.zoom_scale) < 1e-5:
             self._zoom_gesture = False
             return
-        self._start_zoom_anim()
-
-    def _start_zoom_anim(self) -> None:
-        if self._zoom_anim_job is not None:
-            return
-        # after_idle keeps the gesture on the tightest event-loop cadence.
-        self._zoom_anim_job = self.after_idle(self._tick_zoom_anim)
-
-    def _tick_zoom_anim(self) -> None:
-        self._zoom_anim_job = None
-        if self.current_source_image is None:
-            self._zoom_gesture = False
-            return
-        current = self.zoom_scale
-        target = self._zoom_target
-        delta = target - current
-        if abs(delta) <= max(abs(target) * ZOOM_SETTLE_RATIO, 1e-5):
-            self._apply_zoom_now(target, self._zoom_anchor)
-            self._pending_reset_zoom = False
-            # Refresh proxy from this sharp frame (not a late quality job).
-            self._proxy_pil = None
-            self._render_preview_now(interactive=True)
-            self._zoom_gesture = False
-            self._schedule_zoom_settle()
-            return
-        # Nearly 1:1 with the wheel; residual lerp only smooths the last pixels.
-        step = delta * ZOOM_LERP
-        if abs(delta) < 0.02:
-            step = delta
-        next_scale = self._clamp_zoom(current + step)
-        self._apply_zoom_now(next_scale, self._zoom_anchor)
-        # GIMP-style: scale the last viewport bitmap — no source re-crop.
-        # If the proxy is exhausted, refresh it once, then keep using it.
-        if not self._draw_proxy_zoom():
-            self._cancel_ui_render_jobs(cancel_slide=False)
-            self._proxy_pil = None
+        self._apply_zoom_now(target, anchor)
+        if not self._draw_proxy_zoom() and self._proxy_pil is None:
+            # No bitmap yet (first paint) — one real frame, then proxy from here.
             self._render_preview_now(interactive=True)
         try:
             self.preview_canvas.update_idletasks()
         except tk.TclError:
             pass
-        self._zoom_anim_job = self.after_idle(self._tick_zoom_anim)
+        self._schedule_zoom_settle()
 
     def _schedule_zoom_settle(self) -> None:
-        """After the gesture stops: quality frame + optional full-res inspect."""
+        """After the wheel goes quiet: one sharp resample + optional full-res."""
         if self._zoom_settle_job is not None:
-            self.after_cancel(self._zoom_settle_job)
+            try:
+                self.after_cancel(self._zoom_settle_job)
+            except tk.TclError:
+                pass
         self._zoom_settle_job = self.after(
             ZOOM_FULLRES_SETTLE_MS, self._on_zoom_settled
         )
@@ -1408,6 +1563,10 @@ class PhotoCuller(tk.Tk):
         self._zoom_settle_job = None
         if self.current_source_image is None:
             return
+        self._zoom_gesture = False
+        self._pending_reset_zoom = False
+        self._proxy_pil = None
+        self._render_preview_now(interactive=True)
         if (
             self.zoom_scale > self.fit_scale + ZOOM_FULLRES_MARGIN
             and self._needs_full_resolution()
@@ -1574,6 +1733,7 @@ class PhotoCuller(tk.Tk):
             self._pending_reset_zoom = False
             self._render_preview_now(interactive=True)
             self._schedule_preview_render(interactive=False, quality_delay=90)
+        self._draw_stage_chrome()
 
     # --- thumbnails / preload --------------------------------------------
 
@@ -1585,66 +1745,91 @@ class PhotoCuller(tk.Tk):
         else:
             self.preload_label.configure(text="")
 
+    def _thumb_xview(self, *args) -> None:
+        """Scrollbar drag / click: move view then redraw the virtualized strip."""
+        self.thumb_canvas.xview(*args)
+        self._render_thumbnails(center=False)
+
+    def _thumb_xscrollcommand(self, first: str, last: str) -> None:
+        """Canvas view changed (wheel, drag, xview_moveto): keep bar + strip in sync."""
+        self.thumb_scrollbar.set(first, last)
+        self._schedule_thumb_rebuild()
+
+    def _schedule_thumb_rebuild(self) -> None:
+        if self._thumb_rebuild_job is not None:
+            try:
+                self.after_cancel(self._thumb_rebuild_job)
+            except tk.TclError:
+                pass
+        self._thumb_rebuild_job = self.after(16, self._thumb_rebuild_tick)
+
+    def _thumb_rebuild_tick(self) -> None:
+        self._thumb_rebuild_job = None
+        self._render_thumbnails(center=False)
+
     def _render_thumbnails(self, center=False):
         items = self.visible_items
         self.thumb_canvas.delete("all")
+        strip_h = self._px(120)
         if not items:
-            self.thumb_canvas.configure(scrollregion=(0, 0, 1, self._px(120)))
+            self.thumb_canvas.configure(scrollregion=(0, 0, 1, strip_h))
             return
-        canvas_width = self.thumb_canvas.winfo_width() - self.thumb_slot * 5
-        total_width = len(items) * self.thumb_slot
-        self.thumb_canvas.configure(scrollregion=(0, 0, total_width, self._px(120)))
+        # Use the full canvas width (no artificial 5-slot inset).
+        view_w = max(1, self.thumb_canvas.winfo_width())
+        pad = max(8, self.thumb_slot // 4)
+        total_width = pad * 2 + len(items) * self.thumb_slot
+        self.thumb_canvas.configure(scrollregion=(0, 0, total_width, strip_h))
         if center:
             left = max(
                 0,
-                self.index * self.thumb_slot + self.thumb_slot / 2 - canvas_width / 2,
+                pad + self.index * self.thumb_slot + self.thumb_slot / 2 - view_w / 2,
             )
-            max_left = max(0, total_width - canvas_width)
+            max_left = max(0, total_width - view_w)
             self.thumb_canvas.xview_moveto(min(left, max_left) / max(total_width, 1))
         view_left = self.thumb_canvas.canvasx(0)
-        view_right = view_left + canvas_width
-        first = max(0, int(view_left // self.thumb_slot) - 2)
-        last = min(len(items), int(view_right // self.thumb_slot) + 3)
+        view_right = view_left + view_w
+        first = max(0, int((view_left - pad) // self.thumb_slot) - 2)
+        last = min(len(items), int((view_right - pad) // self.thumb_slot) + 3)
         for displayed_index in range(first, last):
             item = items[displayed_index]
             path = item.primary
-            x = displayed_index * self.thumb_slot + self.thumb_slot // 2
+            x = pad + displayed_index * self.thumb_slot + self.thumb_slot // 2
             selected = displayed_index == self.index
-            color = "#4f9cff" if selected else "#343944"
-            thickness = 3 if selected else 1
+            color = "#4f9cff" if selected else "#2A303A"
+            thickness = 2 if selected else 1
             self.thumb_canvas.create_rectangle(
                 x - self.thumb_width // 2 - self._px(3),
-                self._px(9),
+                self._px(8),
                 x + self.thumb_width // 2 + self._px(3),
-                self._px(105),
-                fill="#15171b",
+                self._px(102),
+                fill="#15171B" if selected else "#171A1F",
                 outline=color,
                 width=thickness,
             )
             try:
                 photo = self._thumbnail(item)
                 if photo is not None:
-                    self.thumb_canvas.create_image(x, self._px(57), image=photo)
+                    self.thumb_canvas.create_image(x, self._px(55), image=photo)
                 else:
                     self.thumb_canvas.create_rectangle(
                         x - self.thumb_width // 2,
-                        self._px(57) - self.thumb_height // 2,
+                        self._px(55) - self.thumb_height // 2,
                         x + self.thumb_width // 2,
-                        self._px(57) + self.thumb_height // 2,
+                        self._px(55) + self.thumb_height // 2,
                         fill="#2a2e36",
                         outline="#3a404c",
                     )
                     self.thumb_canvas.create_text(
-                        x, self._px(57), text="…", fill="#8a909a", font=("Segoe UI", 12)
+                        x, self._px(55), text="…", fill="#8a909a", font=("Segoe UI", 12)
                     )
             except Exception:
                 self.thumb_canvas.create_text(
-                    x, self._px(57), text="无法预览", fill="#aab0ba", font=("Segoe UI", 9)
+                    x, self._px(55), text="无法预览", fill="#aab0ba", font=("Segoe UI", 9)
                 )
             marker = "★" if item.key in self.kept else ""
             self.thumb_canvas.create_text(
                 x - self._px(59),
-                self._px(18),
+                self._px(16),
                 text=marker,
                 fill="#ffd35a",
                 font=("Segoe UI Symbol", 12, "bold"),
@@ -1658,7 +1843,7 @@ class PhotoCuller(tk.Tk):
                 )
                 self.thumb_canvas.create_text(
                     x + self._px(59),
-                    self._px(18),
+                    self._px(16),
                     text=mode_text,
                     fill="#8bd7ff",
                     font=("Segoe UI", 7, "bold"),
@@ -1668,7 +1853,7 @@ class PhotoCuller(tk.Tk):
             if len(label) > 18:
                 label = label[:16] + "…"
             self.thumb_canvas.create_text(
-                x, self._px(115), text=label, fill="#d9dde5", font=("Segoe UI", 8)
+                x, self._px(112), text=label, fill="#d9dde5", font=("Segoe UI", 8)
             )
 
     def _thumbnail(self, item: PhotoGroup):
@@ -1703,15 +1888,37 @@ class PhotoCuller(tk.Tk):
         items = self.visible_items
         if not items:
             return
-        clicked = int(self.thumb_canvas.canvasx(event.x) // self.thumb_slot)
+        pad = max(8, self.thumb_slot // 4)
+        clicked = int((self.thumb_canvas.canvasx(event.x) - pad) // self.thumb_slot)
         if 0 <= clicked < len(items):
             self.index = clicked
             self._show_current(center=False)
 
     def _scroll_thumbnails(self, event):
-        self.thumb_canvas.xview_scroll(int(-event.delta / 120) * 3, "units")
+        """Horizontal filmstrip scroll on mouse wheel (works without prior focus)."""
+        delta = getattr(event, "delta", 0)
+        if delta == 0:
+            return "break"
+        # Windows: delta is multiples of 120; high-res mice may send smaller steps.
+        units = int(round(-delta / 120.0 * 4))
+        if units == 0:
+            units = -1 if delta > 0 else 1
+        self.thumb_canvas.xview_scroll(units, "units")
         self._render_thumbnails()
         return "break"
+
+    def _global_wheel(self, event):
+        """Route wheel to the filmstrip when the pointer is over it."""
+        try:
+            under = self.winfo_containing(event.x_root, event.y_root)
+        except tk.TclError:
+            return None
+        if under is None:
+            return None
+        # Accept the canvas itself (image/text items report the canvas).
+        if under == self.thumb_canvas or str(under).startswith(str(self.thumb_canvas)):
+            return self._scroll_thumbnails(event)
+        return None
 
     # --- export / delete -------------------------------------------------
 
@@ -1868,20 +2075,14 @@ class PhotoCuller(tk.Tk):
     # --- status / shutdown -----------------------------------------------
 
     def _status_text(self, item: PhotoGroup | None) -> str:
-        base = self._status_note + "    " if self._status_note else ""
+        base = (self._status_note + "  ") if self._status_note else ""
         if item is None:
-            return f"{base}保留 {len(self.kept)} 张照片"
-        prefix = "★ 已保留" if item.key in self.kept else "未保留"
-        if item.paired_raw_jpeg and item.key in self.kept:
-            paired = f"    绑定组：{pair_mode_label(self._pair_mode(item))}"
-        elif item.paired_raw_jpeg:
-            paired = "    RAW+JPG 绑定组"
-        else:
-            paired = ""
-        return (
-            f"{base}{self.index + 1} / {len(self.visible_items)}    {prefix}"
-            f"    已保留 {len(self.kept)} 个项目{paired}    {item.primary.name}"
-        )
+            return f"{base}★ {len(self.kept)}"
+        star = "★" if item.key in self.kept else "☆"
+        mode = ""
+        if item.paired_raw_jpeg:
+            mode = f"  ·  {pair_mode_label(self._pair_mode(item))}"
+        return f"{base}{star} {len(self.kept)}{mode}"
 
     def _set_status(self, text: str) -> None:
         self.status_label.configure(text=text)

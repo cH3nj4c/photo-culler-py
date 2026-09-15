@@ -75,7 +75,7 @@ class ThumbnailService:
             )
             image = fit_for_display(image, target_w, target_h)
             if image.width < target_w and image.height < target_h:
-                background = Image.new("RGB", (target_w, target_h), "#202329")
+                background = Image.new("RGB", (target_w, target_h), "#1C2027")
                 background.paste(
                     image,
                     ((target_w - image.width) // 2, (target_h - image.height) // 2),

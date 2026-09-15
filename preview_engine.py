@@ -54,9 +54,17 @@ def compute_geometry(
 
     ``zoom_scale`` / ``fit_scale`` are relative to *original* pixels. ``image``
     may be a downsampled preview; source boxes are returned in image pixels.
+
+    这个函数是“缩放图片显示”的核心：
+    - zoom_scale：相对于原图像素的放大倍率（如 1.0=100%，2.0=200%）
+    - fit_scale：让整图适配当前画布时的倍率
+    - pan_x / pan_y：图片在画布中的平移偏移
+    - 返回的 geometry.source_box / target_size / origin：决定最终如何裁切并渲染图片
     """
     orig_w = max(1, original_width)
     orig_h = max(1, original_height)
+    # 由于预览图可能是压缩版，downsample 记录“原图像素 ↔ 预览图像素”的比例。
+    # 之后所有裁剪坐标都先按原图坐标计算，再映射回当前加载的低分辨率图。
     downsample = orig_w / max(1, image.width)
 
     was_at_fit = abs(zoom_scale - previous_fit) < 0.0001

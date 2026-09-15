@@ -28,13 +28,13 @@ class _RoundedWidget(tk.Canvas):
         master,
         text: str = "",
         *,
-        bg: str = "#202329",
-        fill: str = "#2c313a",
-        fill_hover: str = "#3a4250",
-        fill_press: str = "#5aa2ff",
-        outline: str = "#4a5568",
-        fg: str = "#e7e9ed",
-        fg_press: str = "#0d1117",
+        bg: str = "#171A1F",
+        fill: str = "#252A33",
+        fill_hover: str = "#2E3540",
+        fill_press: str = "#4f9cff",
+        outline: str = "#2A303A",
+        fg: str = "#E8EAED",
+        fg_press: str = "#0E1014",
         font=("Segoe UI", 10),
         bold: bool = False,
         padx: int = 14,
@@ -225,20 +225,20 @@ class RoundedButton(_RoundedWidget):
         accent = kwargs.pop("accent", False)
         danger = kwargs.pop("danger", False)
         if accent:
-            kwargs.setdefault("fill", "#2f6fed")
-            kwargs.setdefault("fill_hover", "#3d7ff0")
+            kwargs.setdefault("fill", "#4f9cff")
+            kwargs.setdefault("fill_hover", "#6bb0ff")
             kwargs.setdefault("fill_press", "#9ec2ff")
-            kwargs.setdefault("fg", "#f5f8ff")
-            kwargs.setdefault("fg_press", "#0d1117")
-            kwargs.setdefault("outline", "#2f6fed")
+            kwargs.setdefault("fg", "#0E1014")
+            kwargs.setdefault("fg_press", "#0E1014")
+            kwargs.setdefault("outline", "#4f9cff")
             kwargs.setdefault("bold", True)
         elif danger:
-            kwargs.setdefault("fill", "#4a2c32")
-            kwargs.setdefault("fill_hover", "#5c3840")
+            kwargs.setdefault("fill", "#3A2226")
+            kwargs.setdefault("fill_hover", "#4C2C32")
             kwargs.setdefault("fill_press", "#ef9a9a")
-            kwargs.setdefault("fg", "#f3e0e2")
-            kwargs.setdefault("fg_press", "#1a0d0f")
-            kwargs.setdefault("outline", "#6a4048")
+            kwargs.setdefault("fg", "#F3E0E2")
+            kwargs.setdefault("fg_press", "#1A0D0F")
+            kwargs.setdefault("outline", "#5A3038")
         super().__init__(master, text=text, command=command, **kwargs)
 
 
@@ -260,8 +260,8 @@ class RoundedToggle(_RoundedWidget):
     def _colors(self) -> tuple[str, str, str]:
         if self._enabled and self._variable.get():
             if self._pressed:
-                return "#9ec2ff", "#0d1117", "#9ec2ff"
+                return "#9ec2ff", "#0E1014", "#9ec2ff"
             if self._hover:
-                return "#3d7ff0", "#f5f8ff", "#3d7ff0"
-            return "#2f6fed", "#f5f8ff", "#2f6fed"
+                return "#6bb0ff", "#0E1014", "#6bb0ff"
+            return "#4f9cff", "#0E1014", "#4f9cff"
         return super()._colors()
