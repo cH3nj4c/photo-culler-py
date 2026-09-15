@@ -413,8 +413,9 @@ class PhotoCuller(tk.Tk):
         if not self.all_items:
             self._show_preview_message("这个文件夹中没有受支持的照片")
             self._set_status(
-                f"支持 JPG、PNG、TIFF 及主流相机 RAW（DNG/CR2/CR3/NEF/ARW/ORF/RW2/RAF…）    "
-                f"{describe_cache_plan(cache_limit)}"
+                f"支持 JPG、PNG、TIFF 及主流相机 RAW    "
+                f"{describe_cache_plan(cache_limit)}    "
+                f"{self.preview_engine.describe_resample_backend()}"
             )
             self._update_keep_mode_ui()
             self._render_thumbnails()

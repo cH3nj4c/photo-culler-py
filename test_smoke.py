@@ -139,6 +139,45 @@ assert max(prev.size) <= PREVIEW_CACHE_LONG_EDGE
 assert orig_size == (3200, 2400), orig_size
 print("[1f] preview downscale OK:", prev.size, "orig", orig_size)
 
+# --- 1f2. JPEG fast path (TurboJPEG if present, else Pillow fallback) ---
+from jpeg_fast import decode_jpeg_fast, is_turbojpeg_available, turbojpeg_status
+from imaging import is_jpeg_path
+
+assert is_jpeg_path(large_path)
+fast = decode_jpeg_fast(large_path, (1280, 960))
+print("[1f2] turbojpeg:", turbojpeg_status(), "available=", is_turbojpeg_available())
+if fast is not None:
+    img_f, orig_f = fast
+    assert orig_f == (3200, 2400)
+    assert max(img_f.size) <= 1280
+    print("[1f2] TurboJPEG decode OK", img_f.size)
+else:
+    # Pillow fallback must still work through imaging.read_raster_image
+    from imaging import read_raster_image
+
+    img_p, orig_p = read_raster_image(large_path, (1280, 960))
+    assert orig_p == (3200, 2400)
+    assert max(img_p.size) <= 1280
+    print("[1f2] Pillow fallback OK", img_p.size)
+
+# --- 1h. resample backend selector (CPU always works) ---
+from resample_backend import CpuResampleBackend, ResampleRequest, ResampleService
+from preview_engine import PreviewGeometry
+
+svc = ResampleService("cpu")
+assert svc.start() == "cpu"
+img_rb = Image.new("RGB", (200, 100), (10, 20, 30))
+req = ResampleRequest(
+    img_rb, "id", (0, 0, 200, 100), (100, 50), True
+)
+out = CpuResampleBackend().resample(req)
+assert out.image.size == (100, 50)
+assert out.backend == "cpu"
+auto = ResampleService("auto")
+name = auto.start()
+assert name in ("cpu", "dml", "cuda"), name
+print("[1h] resample backend OK: auto→", name, auto.describe())
+
 # --- 1g. async thumbnail service ---
 from thumbnail_service import ThumbnailService
 

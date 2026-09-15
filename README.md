@@ -34,7 +34,26 @@ pip install -r requirements.txt
 
 依赖：`Pillow`、`rawpy`、`numpy`。
 
-> 未安装 `rawpy` 时程序自动降级：DNG 无法预览，其余格式正常。
+可选加速 JPEG 预览/缩略图解码：
+
+```bash
+pip install PyTurboJPEG
+```
+
+Windows 还需本机有 libjpeg-turbo 动态库（`turbojpeg` / `jpeg62`）。未安装时自动回退 Pillow `draft()`；可用环境变量 `PHOTOCULLER_NO_TURBOJPEG=1` 强制走 Pillow。
+
+可选 GPU 预览重采样（仅 crop/缩放，Tk 界面不变）：
+
+```bash
+# DirectML（NVIDIA / AMD / Intel）
+pip install torch torch-directml
+# 或 CUDA（NVIDIA，CuPy）
+pip install cupy-cuda12x
+```
+
+探测顺序：**DirectML → CUDA → CPU**。`PHOTOCULLER_RESAMPLE=auto|cpu|gpu`（默认 `auto`）。未安装 GPU 包时与现在一样走 CPU。
+
+> 未安装 `rawpy` 时程序自动降级：相机 RAW 无法预览，其余格式正常。
 
 ## 使用
 

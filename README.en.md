@@ -34,6 +34,26 @@ pip install -r requirements.txt
 
 Dependencies: `Pillow`, `rawpy`, `numpy`.
 
+Optional (faster JPEG previews/thumbnails):
+
+```bash
+pip install PyTurboJPEG
+```
+
+Windows also needs the libjpeg-turbo native library (`turbojpeg` / `jpeg62` DLL). Without it the app uses Pillow `draft()` as before. Set `PHOTOCULLER_NO_TURBOJPEG=1` to force the Pillow path.
+
+Optional GPU preview resample (crop/zoom frames only; Tk UI unchanged):
+
+```bash
+# DirectML (NVIDIA / AMD / Intel)
+pip install torch torch-directml
+
+# or CUDA via CuPy (NVIDIA)
+pip install cupy-cuda12x
+```
+
+Probe order is **DirectML → CUDA → CPU**. Control with `PHOTOCULLER_RESAMPLE=auto|cpu|gpu` (default `auto`). Without GPU packages the app uses the CPU path as before.
+
 > Without `rawpy`, the app still runs: camera RAW preview is unavailable; other formats work normally.
 
 ## Usage

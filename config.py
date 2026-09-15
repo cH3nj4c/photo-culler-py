@@ -54,3 +54,7 @@ PREVIEW_QUALITY_DELAY_MS = 150
 PREVIEW_POLL_MS = 16
 
 RESIZE_DEBOUNCE_MS = 220
+
+# Preview crop/resize backend: auto | cpu | gpu
+# auto = DirectML → CUDA → CPU; gpu = any available accelerator; cpu = software only
+RESAMPLE_MODE = "auto"

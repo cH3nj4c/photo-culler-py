@@ -14,6 +14,7 @@ from config import (
     THUMB_WIDTH,
     THUMBNAIL_DECODE_SCALE,
 )
+from jpeg_fast import decode_jpeg_fast
 
 try:
     import rawpy
@@ -23,6 +24,10 @@ except ImportError:  # pragma: no cover - optional dependency
 
 def is_raw_path(path: Path) -> bool:
     return path.suffix.lower() in RAW_EXTENSIONS
+
+
+def is_jpeg_path(path: Path) -> bool:
+    return path.suffix.lower() in {".jpg", ".jpeg"}
 
 
 def thumbnail_decode_size(thumb_width: int, thumb_height: int) -> tuple[int, int]:
@@ -50,9 +55,16 @@ def read_raster_image(
 ) -> tuple[Image.Image, tuple[int, int]]:
     """Decode a normal image and detach it from its file handle.
 
-    Returns ``(image, original_oriented_size)``. For preview/thumbnail reads,
-    Pillow's ``draft`` skips most source pixels before decoding.
+    Returns ``(image, original_oriented_size)``.
+
+    JPEG: tries libjpeg-turbo (PyTurboJPEG) first for reduced-scale decode;
+    falls back to Pillow ``draft`` when turbo is unavailable.
     """
+    if is_jpeg_path(path) and max_size is not None:
+        fast = decode_jpeg_fast(path, max_size)
+        if fast is not None:
+            return fast
+
     with Image.open(path) as opened:
         original_size = _oriented_size_from_open(opened)
         if max_size is not None:

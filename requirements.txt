@@ -2,3 +2,14 @@
 Pillow>=10.0
 rawpy>=0.20
 numpy>=1.26
+
+# 可选：libjpeg-turbo 加速 JPEG 预览/缩略图解码（无则自动回退 Pillow）
+# Windows 还需本机存在 turbojpeg/jpeg62 动态库
+# PyTurboJPEG>=1.7
+
+# 可选：GPU 预览重采样（方案 A，PHOTOCULLER_RESAMPLE=auto|cpu|gpu）
+# DirectML（NVIDIA/AMD/Intel）：
+#   pip install torch torch-directml
+# CUDA（NVIDIA）：
+#   pip install cupy-cuda12x   # 按本机 CUDA 版本选择
+# 均未安装时自动使用 CPU，行为不变

@@ -14,6 +14,7 @@ from config import (
     PREVIEW_OVERSCAN,
     PREVIEW_OVERSCAN_MAX_PX,
 )
+from resample_backend import ResampleRequest, ResampleService
 
 
 @dataclass(frozen=True)
@@ -137,9 +138,10 @@ class PreviewEngine:
 
     Only Tk image creation stays on the UI thread; workers emit frames into a
     queue that the UI polls. Generation numbers drop stale frames.
+    Crop/resize goes through ResampleService (DirectML → CUDA → CPU).
     """
 
-    def __init__(self, max_workers: int = 2) -> None:
+    def __init__(self, max_workers: int = 2, resampler: ResampleService | None = None) -> None:
         self.events: queue.Queue = queue.Queue()
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="photo-culler-preview"
@@ -148,6 +150,8 @@ class PreviewEngine:
         self._futures: set[Future] = set()
         self._levels: dict[tuple[str, int], Image.Image] = {}
         self._levels_lock = Lock()
+        self._resampler = resampler or ResampleService()
+        self._resampler.start()
 
     @property
     def generation(self) -> int:
@@ -224,16 +228,9 @@ class PreviewEngine:
 
     @staticmethod
     def _resample_for(src_size: tuple[int, int], target_size: tuple[int, int], interactive: bool) -> int:
-        """LANCZOS only for mild shrink / enlarge; heavy downscale uses BILINEAR."""
-        if interactive:
-            return Image.Resampling.BILINEAR
-        src_w, src_h = src_size
-        if src_w <= 0 or src_h <= 0:
-            return Image.Resampling.BILINEAR
-        scale = min(target_size[0] / src_w, target_size[1] / src_h)
-        if scale >= 0.5:
-            return Image.Resampling.LANCZOS
-        return Image.Resampling.BILINEAR
+        from resample_backend import pil_resample_for
+
+        return pil_resample_for(src_size, target_size, interactive)
 
     def _build_frame(
         self,
@@ -243,11 +240,20 @@ class PreviewEngine:
         interactive: bool,
     ) -> Image.Image:
         source = self._source_for(image, path_id, geometry.downsample_factor, interactive)
-        crop = source.crop(geometry.source_box)
-        if crop.size != geometry.target_size:
-            resample = self._resample_for(crop.size, geometry.target_size, interactive)
-            crop = crop.resize(geometry.target_size, resample)
-        return crop
+        req = ResampleRequest(
+            image=source,
+            path_id=path_id,
+            source_box=geometry.source_box,
+            target_size=geometry.target_size,
+            interactive=interactive,
+        )
+        return self._resampler.resample(req).image
+
+    def resample_backend_name(self) -> str:
+        return self._resampler.active_name
+
+    def describe_resample_backend(self) -> str:
+        return self._resampler.describe()
 
     def drain_latest(self) -> tuple | None:
         newest = None
@@ -275,6 +281,10 @@ class PreviewEngine:
     def shutdown(self) -> None:
         self.cancel_all()
         self._executor.shutdown(wait=False, cancel_futures=True)
+        try:
+            self._resampler.shutdown()
+        except Exception:
+            pass
 
 
 def constrain_pan(
