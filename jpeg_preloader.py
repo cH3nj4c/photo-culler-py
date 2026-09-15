@@ -1,17 +1,17 @@
-"""Sliding-window JPEG preview cache with a single latest-wins preload worker."""
+"""Sliding-window JPEG preview cache with parallel preload workers."""
 
 from __future__ import annotations
 
 import queue
 from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
 from typing import NamedTuple
 
-from config import JPEG_PRELOAD_AHEAD, JPEG_PRELOAD_BEHIND
+from config import JPEG_PRELOAD_AHEAD, JPEG_PRELOAD_BEHIND, JPEG_PRELOAD_WORKERS
 from domain import PhotoGroup
 from imaging import decode_preview_photo
 from sysmem import recommend_jpeg_cache_limit
-from workers import LatestOnlyWorker
 
 
 class PreviewCacheEntry(NamedTuple):
@@ -78,22 +78,37 @@ class JpegCache:
 class JpegPreloader:
     """Keep a sliding window of preview JPEGs decoded around the current index.
 
-    One worker thread owns decoding. Rapid navigation replaces the pending job
-    instead of spawning additional threads.
+    Multiple worker threads decode in parallel. Navigation does not cancel
+    in-flight decodes that are still useful for the new window — only a folder
+    switch / close invalidates the epoch.
     """
 
-    def __init__(self, cache: JpegCache) -> None:
+    def __init__(self, cache: JpegCache, max_workers: int | None = None) -> None:
         self.cache = cache
         self.events: queue.Queue = queue.Queue()
         self._generation = 0
-        self._worker = LatestOnlyWorker("photo-culler-jpeg-preload")
+        workers = max_workers or max(2, JPEG_PRELOAD_WORKERS)
+        self._executor = ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="photo-culler-jpeg-preload"
+        )
+        self._lock = Lock()
+        self._inflight: dict[str, Future] = {}
+        self._completed = 0
+        self._pending_total = 0
 
     @property
     def generation(self) -> int:
         return self._generation
 
     def invalidate(self) -> int:
+        """Cancel queued work (folder change / shutdown). Running decodes finish into cache."""
         self._generation += 1
+        with self._lock:
+            for fut in self._inflight.values():
+                fut.cancel()
+            self._inflight.clear()
+            self._completed = 0
+            self._pending_total = 0
         return self._generation
 
     def request_window(self, all_items: list[PhotoGroup], center_index: int) -> str:
@@ -114,7 +129,6 @@ class JpegPreloader:
             ((i, item) for i, item in jpeg_items if lo <= i <= hi),
             key=lambda pair: abs(pair[0] - center_index),
         )
-        window_paths = [item.primary for _i, item in window]
         window_keys = {item.primary_id for _i, item in window}
 
         evict_lo = max(0, center_index - JPEG_PRELOAD_BEHIND * 2)
@@ -127,35 +141,55 @@ class JpegPreloader:
                 self.cache.pop(key)
 
         already = self.cache.keys()
-        to_load = [item for _i, item in window if item.primary_id not in already]
-        if not to_load:
-            return f"JPG 缓存 {len(already & window_keys)} / {len(window_paths)}"
+        with self._lock:
+            inflight = set(self._inflight.keys())
+            to_load = [
+                item
+                for _i, item in window
+                if item.primary_id not in already and item.primary_id not in inflight
+            ]
+            if not to_load:
+                cached_n = len(already & window_keys)
+                running = len(self._inflight)
+                if running:
+                    return f"正在预载 JPG：缓存 {cached_n}/{len(window_keys)} · 在途 {running}"
+                return f"JPG 缓存 {cached_n} / {len(window_keys)}"
 
-        self.invalidate()
-        generation = self._generation
-        self.events.put((generation, 0, len(to_load), False))
-        self._worker.submit(generation, self._preload, to_load)
-        return f"正在预载 JPG：0 / {len(to_load)}"
+            generation = self._generation
+            # Progress baseline: what we already have + what we just queued.
+            self._completed = len(already & window_keys)
+            self._pending_total = len(window_keys)
+            for item in to_load:
+                fut = self._executor.submit(self._decode_one, generation, item)
+                self._inflight[item.primary_id] = fut
+            done = self._completed
+            total = self._pending_total
 
-    def _preload(self, generation: int, items: list[PhotoGroup]) -> None:
-        total = len(items)
-        for number, item in enumerate(items, start=1):
-            if generation != self._generation:
-                return
-            try:
-                image, original_size = decode_preview_photo(item.primary)
-            except Exception:
-                # One corrupt file must not kill the whole preload window.
-                if number == 1 or number == total or number % 10 == 0:
-                    self.events.put((generation, number, total, False))
-                continue
-            if generation != self._generation:
-                return
-            self.cache.put(item.primary_id, image, original_size)
-            if number == 1 or number == total or number % 10 == 0:
-                self.events.put((generation, number, total, False))
-        self.events.put((generation, total, total, True))
+        self.events.put((generation, done, total, False))
+        return f"正在预载 JPG：{done}/{total}"
+
+    def _decode_one(self, generation: int, item: PhotoGroup) -> None:
+        key = item.primary_id
+        try:
+            image, original_size = decode_preview_photo(item.primary)
+            # Always fill cache — useful even if the user already moved on.
+            self.cache.put(key, image, original_size)
+        except Exception:
+            pass
+        finally:
+            with self._lock:
+                self._inflight.pop(key, None)
+                if generation != self._generation:
+                    return
+                self._completed += 1
+                done = self._completed
+                total = max(self._pending_total, done)
+                idle = not self._inflight
+        if idle:
+            self.events.put((generation, total, total, True))
+        else:
+            self.events.put((generation, done, total, False))
 
     def close(self) -> None:
         self.invalidate()
-        self._worker.close()
+        self._executor.shutdown(wait=False, cancel_futures=True)

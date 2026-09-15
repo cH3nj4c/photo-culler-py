@@ -40,8 +40,10 @@ THUMBNAIL_DECODE_SCALE = 2
 
 # Hard ceiling; live limit comes from sysmem.recommend_jpeg_cache_limit.
 JPEG_CACHE_LIMIT = 60
-JPEG_PRELOAD_AHEAD = 20
-JPEG_PRELOAD_BEHIND = 10
+JPEG_PRELOAD_AHEAD = 24
+JPEG_PRELOAD_BEHIND = 12
+# Parallel JPEG preview decodes (disk-bound on HDD; helps SSD).
+JPEG_PRELOAD_WORKERS = 3
 
 # Cached "preview" JPEGs are downscaled to this long edge (display/fit path).
 # Full-resolution pixels are loaded only for the current photo when zoomed.
