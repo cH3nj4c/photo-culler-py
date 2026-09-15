@@ -1,5 +1,9 @@
 # Photo Culler
 
+<p align="center">
+  <img src="assets/logo.png" alt="Photo Culler logo" width="280"/>
+</p>
+
 一个面向 Windows 摄影工作流的快速选片工具。打开照片文件夹，快速浏览并标记保留/取消保留，最后把选中的原始文件复制到另一个文件夹。
 
 [English](README.en.md)

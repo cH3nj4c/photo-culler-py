@@ -47,6 +47,7 @@ from preview_engine import (
     compute_geometry,
     constrain_pan,
 )
+from app_icon import apply_window_icon
 from selection_store import load_selection, save_selection
 from sysmem import describe_cache_plan, recommend_jpeg_cache_limit
 from temp_cleanup import cleanup_on_exit
@@ -61,6 +62,7 @@ class PhotoCuller(tk.Tk):
         enable_windows_high_dpi()
         super().__init__()
         self.title(APP_NAME)
+        apply_window_icon(self)
         self._configure_dpi_layout()
         self.configure(bg="#17191d")
 

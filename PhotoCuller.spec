@@ -55,7 +55,9 @@ a = Analysis(
     [str(project / "app.py")],
     pathex=[str(project)],
     binaries=binaries,
-    datas=datas,
+    datas=datas + [(str(project / "assets" / "app.ico"), "assets"),
+                   (str(project / "assets" / "logo.png"), "assets"),
+                   (str(project / "assets" / "logo-mark.png"), "assets")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -85,6 +87,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(project / "assets" / "app.ico"),
 )
 
 coll = COLLECT(
