@@ -3,11 +3,16 @@ Pillow>=10.0
 rawpy>=0.20
 numpy>=1.26
 
+# GPU 预览界面（默认界面；缺失时自动回退 Tk 界面，可用 PHOTOCULLER_UI=tk 强制 Tk）
+PySide6>=6.6
+vispy>=0.14
+PyOpenGL>=3.1
+
 # 可选：libjpeg-turbo 加速 JPEG 预览/缩略图解码（无则自动回退 Pillow）
 # Windows 还需本机存在 turbojpeg/jpeg62 动态库
 # PyTurboJPEG>=1.7
 
-# 可选：GPU 预览重采样（方案 A，PHOTOCULLER_RESAMPLE=auto|cpu|gpu）
+# 可选：Tk 回退界面的 GPU 预览重采样（仅 Tk 壳使用；Qt 壳的缩放/插值全部在 GPU 上）
 # DirectML（NVIDIA/AMD/Intel）：
 #   pip install torch torch-directml
 # CUDA（NVIDIA）：

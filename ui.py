@@ -653,7 +653,6 @@ class PhotoCuller(tk.Tk):
         if not items:
             return
         # Wrap around: past the last photo goes to the first, and vice versa.
-        self._slide_direction = direction
         self.index = (self.index + direction) % len(items)
         self._show_current(center=True)
 
@@ -984,8 +983,9 @@ class PhotoCuller(tk.Tk):
             return
         previous_photo = self.preview_photo
         self.preview_photo = ImageTk.PhotoImage(frame)
-        direction = self._slide_direction
+        # Gallery slide disabled — swap frames immediately.
         self._slide_direction = 0
+        direction = 0
 
         # Drop any orphaned slide leftovers.
         if self.preview_image_item is not None:

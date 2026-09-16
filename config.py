@@ -64,6 +64,16 @@ ZOOM_FULLRES_MARGIN = 0.08
 ZOOM_FULLRES_SETTLE_MS = 120
 ZOOM_INTERACTIVE_DELAY_MS = 1
 
+# Hard zoom ceiling in original-pixel terms (GPU shell uses this; the Tk
+# shell hardcodes the same 4.0 in ui.py / preview_engine.py).
+ZOOM_MAX_PIXEL_SCALE = 4.0
+
+# GPU shell only. The uploaded preview texture is already being *minified*
+# below its own 1:1 scale, so loading the full-resolution image earlier than
+# that buys no detail but costs a ~50-110 ms texture upload. This margin is a
+# safety factor on top of the texture's native scale.
+ZOOM_PREVIEW_NATIVE_MARGIN = 1.02
+
 RESIZE_DEBOUNCE_MS = 220
 
 # Preview crop/resize backend: auto | cpu | gpu

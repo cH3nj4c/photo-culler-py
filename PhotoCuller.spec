@@ -32,8 +32,25 @@ hiddenimports = [
     "tkinter.ttk",
 ]
 
+# Optional GPU preview shell (qt_ui + gpu_preview, PySide6 + VisPy).
+# Bundled only when the build venv has the packages; without them the app
+# automatically falls back to the Tkinter shell at runtime.
+_has_qt_ui = True
+try:
+    import PySide6  # noqa: F401
+    import vispy  # noqa: F401
+except ImportError:
+    _has_qt_ui = False
+
 datas = []
 binaries = []
+
+if _has_qt_ui:
+    from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+    hiddenimports += ["qt_ui", "gpu_preview"]
+    hiddenimports += collect_submodules("vispy")
+    datas += collect_data_files("vispy")
 
 # Bundle Tcl/Tk script trees from the base interpreter (venv may not copy them).
 import sys

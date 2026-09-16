@@ -7,7 +7,7 @@ if not exist "%PY%" (
   echo Creating build venv...
   python -m venv .venv-build || exit /b 1
   .venv-build\Scripts\python.exe -m pip install -U pip wheel || exit /b 1
-  .venv-build\Scripts\python.exe -m pip install Pillow numpy rawpy pyinstaller || exit /b 1
+  .venv-build\Scripts\python.exe -m pip install Pillow numpy rawpy PySide6 vispy PyOpenGL pyinstaller || exit /b 1
 )
 
 echo Building Photo Culler (onedir)...

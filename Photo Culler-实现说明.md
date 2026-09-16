@@ -1,5 +1,27 @@
 # Photo Culler：功能实现说明
 
+> **阅读提示**：本文档最早描述的是 Tkinter 界面下的实现，其中若干细节已被后续版本取代（**目录递归、RAW 厂商范围、并发的预载 worker、打包形态、预览引擎**）。截至目前准确的状态以 [README.md](README.md) 为准；本文档保留作为 Tk 界面与选片语义的参考，差异处已在正文标注。
+
+## 0. 当前架构概览（GPU 预览）
+
+预览与缩放已从 Tk 画布迁移到 GPU 引擎，程序现在有两个界面层：
+
+| 模块 | 角色 |
+|---|---|
+| `gpu_preview.py` | GPU 预览引擎：VisPy `SceneCanvas` + OpenGL 纹理，含 `ZoomPlan`（纯缩放数学）与 `SmoothPanZoomCamera`（光标锚定的缓动滚轮缩放） |
+| `qt_ui.py` | PySide6 界面层，**默认启动** |
+| `ui.py` | Tkinter 界面层，**降级通路**，功能完整保留 |
+
+`app.py` 依据环境变量 `PHOTOCULLER_UI` 分发：`auto`（默认）优先 Qt，缺少 Qt 依赖时回退 Tk；`qt` / `tk` 强制指定。两个界面层共用 `domain` 与全部服务层模块（解码、缓存、导出、缩略图、选片记录），因此选片语义完全一致。
+
+GPU 引擎的关键约定：
+
+1. **场景坐标恒为原图像素**。预览图是降采样版，但上传纹理时用 `STTransform` 的缩放把两种分辨率映射到同一坐标系，所以从预览切到全分辨率时视野不跳动。
+2. **缩放语义**：`pixel_zoom()` = 每个原图像素占多少屏幕像素，`1.0` 即 100%。适应窗口不会放大小图，上限为 `config.ZOOM_MAX_PIXEL_SCALE`（4×）。
+3. **按需全分辨率**：缩放超过「适应窗口 + `ZOOM_FULLRES_MARGIN`」时才后台读入全分辨率并替换纹理；回到适应窗口释放，并受 `GL_MAX_TEXTURE_SIZE` 保护（超出单纹理上限的照片保持预览）。
+4. **GPU 上下文延迟初始化**：必须等窗口首次显示后才查询显卡/创建上下文（`initialize_after_show()`），否则 `QOpenGLWidget` 尚未就绪。
+5. **换图后要标记插值查找失效**（`_need_interpolation_update = True`），否则 VisPy 会沿用上一张的插值级别。
+
 ## 1. 软件目标
 
 Photo Culler 是一个面向 Windows 摄影工作流的快速选片工具。它不负责调色、裁剪或修改照片，只负责：
@@ -15,10 +37,11 @@ Photo Culler 是一个面向 Windows 摄影工作流的快速选片工具。它�
 ## 2. 使用的技术
 
 - **Python 3.13**：主要开发语言。
-- **Tkinter/ttk**：Windows 桌面界面、按钮、复选框和画布。
+- **PySide6 + VisPy/OpenGL**：GPU 预览界面（默认）；`PyOpenGL` 提供 GL 绑定。
+- **Tkinter/ttk**：降级界面层的窗口、按钮、复选框和画布。
 - **Pillow**：读取 JPG、JPEG、PNG、TIFF，进行缩放、裁剪和 EXIF 方向处理。
-- **rawpy/LibRaw**：读取 DNG 的内嵌预览图；没有内嵌预览时，解码较小的 RAW 预览。
-- **PyInstaller**：将程序及依赖打包成单个 `.exe`。
+- **rawpy/LibRaw**：读取主流相机 RAW（DNG/CR2/CR3/NEF/ARW/ORF/RW2/RAF 等）的内嵌预览图；没有内嵌预览时，解码较小的 RAW 预览。
+- **PyInstaller**：打包成 onedir 目录（再由 `Installer.spec` 打成单文件安装器）。
 - **Tcl/Tk 运行库**：随最终程序一起打包，避免依赖用户电脑上可能不完整的 Python Tk 安装。
 
 ## 3. 界面结构
@@ -30,20 +53,20 @@ Photo Culler 是一个面向 Windows 摄影工作流的快速选片工具。它�
 3. **状态栏**：显示当前序号、保留状态、RAW/JPG 模式和 JPG 预载进度。
 4. **底部缩略图栏**：显示当前文件夹中的照片组，黄色星号表示已保留。
 
-底部缩略图不是一次性把所有大图加载到界面中，而是只为当前可见范围生成 Tk 缩略图，从而避免照片数量较多时一次创建几千个界面图片对象。
+> 注意：本节描述的界面分区对两个界面层都成立；但 Tk 界面用 `Canvas` 自绘工具栏按钮，Qt 界面用真实控件（`QToolBar` / `QLabel` / `QListWidget`）。
+
+底部缩略图不是一次性把所有大图加载到界面中，而是只为当前可见范围生成缩略图，从而避免照片数量较多时一次创建几千个界面图片对象。
 
 ## 4. 文件读取与格式支持
 
-当前扫描的是用户选择文件夹的第一层文件，不递归进入子文件夹。支持的扩展名为：
+扫描范围为用户选择文件夹及其**普通子文件夹**（递归；不跟随符号链接/junction，避免目录环与越界）。支持的扩展名为：
 
-- `.jpg`
-- `.jpeg`
+- `.jpg` / `.jpeg`
 - `.png`
-- `.tif`
-- `.tiff`
-- `.dng`
+- `.tif` / `.tiff`
+- 主流相机 RAW（经 rawpy/LibRaw）：`.dng` `.cr2` `.cr3` `.nef` `.nrw` `.arw` `.srf` `.sr2` `.orf` `.rw2` `.raf` `.pef` `.raw` `.rwl` `.3fr` `.fff` `.mrw` `.erf` `.dcr` `.kdc` `.mos` `.iiq` 等
 
-目录扫描使用 `os.scandir()` 一次枚举并复用 Windows 返回的文件类型信息，避免对每个目录项再执行一次独立的 `stat` 查询。打开文件夹时不会递归子目录。
+目录扫描在后台线程用 `os.scandir()` + 显式目录栈完成，复用 Windows 返回的文件类型信息，避免对每个目录项再执行一次独立的 `stat` 查询；扫描期间不解码任何照片，结束后按相对路径排序并一次性替换照片列表。
 
 普通图片读取流程如下：
 
@@ -54,12 +77,13 @@ Photo Culler 是一个面向 Windows 摄影工作流的快速选片工具。它�
 
 缩略图读取使用独立的轻量路径：JPEG 先通过 Pillow `draft()` 请求接近缩略图尺寸的解码级别，再进行 EXIF 方向处理和小尺寸缩放；PNG/TIFF 等格式也会在读取后立即缩小。这样缩略图不会为了显示约 132×88 的小图而保留整张高分辨率图像。
 
-DNG 的读取流程如下：
+RAW 的读取流程如下（DNG 同样适用）：
 
-1. 用 rawpy 打开 DNG。
+1. 用 rawpy/LibRaw 打开 RAW。
 2. 优先调用 `extract_thumb()`，读取相机写入的内嵌预览图。
 3. 如果没有可用内嵌预览，再调用 LibRaw 生成 `half_size=True` 的屏幕预览。
-4. 导出时不重新保存 DNG，而是直接复制用户的原始 DNG 文件。
+4. 需要 100% 检视时重新全尺寸 `postprocess()`。
+5. 导出时不重新保存 RAW，而是直接复制用户的原始 RAW 文件。
 
 ## 5. RAW+JPG 自动绑定逻辑
 
@@ -318,14 +342,21 @@ PER_MONITOR_AWARE_V2
 3. 仅 RAW、仅 JPG、RAW+JPG 导出成员选择测试。
 4. 保留状态与模式独立性的测试。
 5. 删除功能测试（`test_delete.py`）：回收站调用（单文件、多文件双 NUL 路径块、文件不存在）、单张照片删除后的缓存与选片状态清理、RAW+JPG 组整组删除。
-6. 打包后的 `.exe --self-test` 无窗口运行库自检，退出码为 0。
+6. GPU 界面端到端测试（`test_gpu_ui.py`）：`ZoomPlan` 缩放钳制数学、扫描与分组、预览纹理上传、导航、保留标记、光标锚定滚轮缩放动画、按需全分辨率上传与释放、"只看保留"筛选、RAW+JPG 整组删除、导出。
+7. 入口分发测试（`test_entry_dispatch.py`）：`PHOTOCULLER_UI` 取值映射、缺少 tkinter 时 `import app` 仍可用且降级提示清晰。
+8. Tk 界面功能冒烟测试（`test_smoke.py`）。
+9. 打包后的 `.exe --self-test` 无窗口运行库自检，退出码为 0。
+
+`test_gpu_ui.py` 用 `WA_DontShowOnScreen` 创建隐形窗口，因此不占用桌面，但仍会拿到真实的 OpenGL 上下文（显卡信息在测试中会打印出来）。
 
 按照使用者要求，没有通过 Computer Use 自动操作用户桌面做视觉测试；因此实际照片文件夹中的显示效果仍应由用户在自己的显示器上进行最后确认。
 
 ## 15. 当前边界
 
-- 当前 RAW 专门支持 DNG；其他相机 RAW 格式尚未加入。
-- 当前只扫描所选文件夹的第一层，不自动递归子文件夹。
+- RAW 经 rawpy/LibRaw 支持主流厂商格式；个别厂商的新机型可能需要更新 LibRaw 才能识别。
+- 扫描会递归进入所选文件夹的普通子文件夹，但不跟随符号链接/junction。
+- GPU 预览受显卡单纹理上限约束（`GL_MAX_TEXTURE_SIZE`）；超过上限的照片在放大检视时保持预览分辨率，不会崩溃。
+- GPU 界面需要可用的 OpenGL；虚拟机、远程桌面或老旧显卡上会被 `PHOTOCULLER_UI=auto` 回退到 Tkinter 界面。
 - 软件是选片工具，不包含调色、裁剪和照片修改功能。删除功能只负责把文件移入回收站，不做永久删除。
 - 删除不提供撤销菜单；需要恢复时请到 Windows 回收站里还原。
 - 若单个文件超过回收站容量上限，Windows 可能绕过回收站直接永久删除。

@@ -6,6 +6,8 @@ import queue
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
+import numpy as np
+
 from jpeg_preloader import JpegCache, PreviewCacheEntry
 from imaging import decode_photo, decode_preview_photo
 
@@ -45,21 +47,38 @@ class ImageLoader:
     def try_cached(self, path_id: str) -> PreviewCacheEntry | None:
         return self.jpeg_cache.get(path_id)
 
-    def submit(self, path: Path, path_id: str, full_resolution: bool = False) -> int:
-        """Queue a decode."""
+    def submit(
+        self,
+        path: Path,
+        path_id: str,
+        full_resolution: bool = False,
+        want_array: bool = False,
+    ) -> int:
+        """Queue a decode.
+
+        ``want_array`` hands back a contiguous uint8 RGB array instead of the
+        PIL image. Callers that upload straight to a GPU texture want this,
+        because the conversion is a full-size copy: for a 24 MP photo it costs
+        ~60 ms, which is far too much to spend on the UI thread.
+        """
         self.bump_generation()
         generation = self._generation
         for future in self._futures:
             future.cancel()
         self._futures = {f for f in self._futures if not f.done()}
         future = self._executor.submit(
-            self._decode, generation, path, path_id, full_resolution
+            self._decode, generation, path, path_id, full_resolution, want_array
         )
         self._futures.add(future)
         return generation
 
     def _decode(
-        self, generation: int, path: Path, path_id: str, full_resolution: bool
+        self,
+        generation: int,
+        path: Path,
+        path_id: str,
+        full_resolution: bool,
+        want_array: bool = False,
     ) -> None:
         try:
             if full_resolution:
@@ -67,10 +86,14 @@ class ImageLoader:
                 original_size = image.size
             else:
                 image, original_size = decode_preview_photo(path)
-                if path.suffix.lower() in {".jpg", ".jpeg"}:
-                    self.jpeg_cache.put(path_id, image, original_size)
+            if want_array:
+                payload = np.ascontiguousarray(np.asarray(image, dtype=np.uint8))
+            else:
+                payload = image
+            if not full_resolution and path.suffix.lower() in {".jpg", ".jpeg"}:
+                self.jpeg_cache.put(path_id, image, original_size)
             self.events.put(
-                (generation, path_id, image, original_size, None, full_resolution)
+                (generation, path_id, payload, original_size, None, full_resolution)
             )
         except Exception as exc:
             self.events.put((generation, path_id, None, None, exc, full_resolution))
