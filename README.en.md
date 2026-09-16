@@ -91,6 +91,21 @@ The preference is written to `HKCU\Software\Microsoft\DirectX\UserGpuPreferences
 
 Settings live in `%LOCALAPPDATA%\PhotoCuller\settings.json`, kept separate from the per-folder selection records.
 
+### Live resource usage
+
+The right sidebar's 资源 section shows four readings, refreshed about once a second:
+
+| Reading | Source |
+|---|---|
+| 内存 | System physical memory in use (used / total + percentage) |
+| 本程序 | This process's working set (resident memory) |
+| GPU | Machine-wide GPU utilisation (all engines summed, capped at 100%) |
+| 显存 | Dedicated VRAM in use (used / total + percentage) |
+
+Hovering any row reveals per-adapter GPU utilisation plus this app's own GPU and VRAM usage. Adapters are matched by DXGI's LUID, so the tooltip names real cards rather than showing hex identifiers.
+
+Sampling runs on a **background thread** — PDH needs two collections about a second apart before it can produce a rate — and the UI only touches its labels when a new reading lands. On a machine without GPU performance counters (a VM, a trimmed-down install) the GPU and VRAM rows show "—" with the reason underneath: **"—" means "cannot measure", which is not the same as "0%"**.
+
 ## Usage
 
 Run from source (recommended — picks an interpreter that has the dependencies):
@@ -149,8 +164,10 @@ PhotoCuller-source/
 ├── winshell.py            # HiDPI + Recycle Bin
 ├── selection_store.py     # Selection persistence (%LOCALAPPDATA%)
 ├── app_settings.py        # User settings (%LOCALAPPDATA%\PhotoCuller\settings.json)
+├── version_info.py        # Version → exe resource + installer name (source: config.APP_VERSION)
 ├── gpu_info.py            # GPU detection (registry + DXGI + live GL; iGPU/dGPU classification)
 ├── gpu_accel.py           # Selectable schemes (environment + Windows per-app GPU preference)
+├── sysmon.py              # Live resource sampling (RAM / working set / GPU / VRAM, background thread)
 ├── jpeg_preloader.py      # JPEG preview LRU + sliding-window preload
 ├── image_loader.py        # Background decode (preview / full-res)
 ├── export_service.py      # Background export (progress / Esc cancel)
@@ -167,6 +184,8 @@ PhotoCuller-source/
 ├── resample_backend.py    # Tk resample backends (CPU / DirectML / CUDA)
 ├── requirements.txt
 ├── test_gpu_ui.py         # GPU shell end-to-end smoke test
+├── test_version.py        # Version chain (reads the resource back from the built exe)
+├── test_sysmon.py         # Resource sampling (formatting, degradation, LUID parsing, thread)
 ├── test_gpu_accel.py      # GPU detection / scheme tests (classification, merge, settings, registry)
 ├── test_entry_dispatch.py # Entry dispatch / fallback behaviour
 ├── test_smoke.py          # Tk shell smoke test
@@ -195,10 +214,35 @@ PhotoCuller-source/
 
 Chinese implementation notes: [Photo Culler-实现说明.md](Photo%20Culler-%E5%AE%9E%E7%8E%B0%E8%AF%B4%E6%98%8E.md).
 
+## Versioning
+
+**`APP_VERSION` in `config.py` is the single source of truth.** Change that one string and everything follows automatically:
+
+| Follows | Where |
+|---|---|
+| Windows version resource | Stamped into both exes — visible in 属性 → 详细信息 |
+| Installer filename | `dist\Photo-Culler-Setup<version>.exe`, **no manual renaming** |
+| Window title | `Photo Culler <version> — <folder>` |
+| Right-sidebar version footer | `v<version>`, click to open 关于 |
+| 更多… → 关于 Photo Culler… | Version, version resource, renderer, installer name (also copied to the clipboard) |
+| First line of `app.py --self-test` | So "which build are you running?" is answerable |
+| Installer window | Version in both the title and the description |
+
+`version_info.py` turns `APP_VERSION` into the version-resource text PyInstaller expects (serializing PyInstaller's own `VSVersionInfo` rather than hand-writing the structure) and derives the installer name. Both `.spec` files **generate that file at build time** into `build/`, so nothing version-related is committed and a stale artifact cannot silently ship.
+
+`test_version.py` pins the whole chain: constant → resource fields → generated file deserializes through PyInstaller → every consumer references the constant instead of hardcoding → `installer.iss`'s `MyAppVersion` matches → and finally it **reads the version resource back out of the built exe**, so a stale `dist/` fails loudly.
+
+> Release flow: bump `config.APP_VERSION` → run `build_exe.bat`, then `build_installer.bat` → `python test_version.py` to verify the artifacts.
+> `installer.iss` is the **optional manual path** (`ISCC.exe installer.iss`); the automated build uses `Installer.spec`. If you do use it, keep `MyAppVersion` in sync — the test checks it.
+
+> ⚠️ Older setups left in `dist\` (e.g. `Photo-Culler-Setup1.0.1.exe`) contain **none of the later fixes** — running one installs an old build. Use the file whose name carries the current version.
+
 ## Tests
 
 ```bash
-python app.py --self-test        # runtime self-check: real Tk root + GPU deps + live adapter detection
+python app.py --self-test        # runtime self-check: version first, real Tk root, GPU deps, live adapter + resource probe
+python test_version.py           # version chain: constant → resource → specs → actually stamped into the built exe
+python test_sysmon.py            # resource sampling: formatting, "—" degradation, LUID parsing, sampler lifecycle
 python test_gpu_ui.py            # GPU shell end to end (scan/nav/GPU zoom/full-res/filter/delete/export/layout/accel menu)
 python test_gpu_accel.py         # GPU detection + schemes (classification, source merge, settings, reversible registry)
 python test_entry_dispatch.py    # entry dispatch and fallback messages

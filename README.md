@@ -96,6 +96,21 @@ Windows 还需本机有 libjpeg-turbo 动态库（`turbojpeg` / `jpeg62`）。�
 
 设置持久化在 `%LOCALAPPDATA%\PhotoCuller\settings.json`（与选片记录分开存放，互不影响）。
 
+### 实时资源占用
+
+右栏「资源」分区显示四项，每秒刷新一次：
+
+| 显示 | 来源 |
+|---|---|
+| 内存 | 系统物理内存占用（已用/总量 + 百分比） |
+| 本程序 | 本进程工作集（常驻内存） |
+| GPU | 全机 GPU 占用率（所有引擎合计，上限 100%） |
+| 显存 | 专用显存占用（已用/总量 + 百分比） |
+
+悬停任意一行可看到分适配器的 GPU 占用、本程序 GPU 与显存占用。适配器按 DXGI 的 LUID 对应，所以显示的是真实显卡名而不是十六进制标识。
+
+采样在**后台线程**进行（PDH 需要相隔约 1 秒采集两次才能算出比率），UI 只在有新读数时更新标签。若机器没有 GPU 性能计数器（虚拟机、精简系统等），GPU 与显存显示为「—」并在下方说明原因 —— **「—」表示测不到，和「0%」不是一回事**。
+
 ## 使用
 
 从源码运行（推荐，会自动挑一个装好依赖的解释器）：
@@ -152,8 +167,10 @@ PhotoCuller-source/
 ├── winshell.py               # HiDPI 与回收站删除
 ├── selection_store.py        # 选片记录持久化（%LOCALAPPDATA%）
 ├── app_settings.py           # 用户设置持久化（%LOCALAPPDATA%\PhotoCuller\settings.json）
+├── version_info.py           # 版本号 → exe 版本资源 + 安装包命名（唯一来源是 config.APP_VERSION）
 ├── gpu_info.py               # 显卡检测（注册表 + DXGI + 实时 GL，核显/独显分类）
 ├── gpu_accel.py              # 可选加速方案（环境变量 + Windows 按应用 GPU 偏好）
+├── sysmon.py                 # 实时资源采样（RAM / 工作集 / GPU 占用 / 显存，后台线程）
 ├── jpeg_preloader.py         # JPEG 预览 LRU + 滑动窗口预载（多 worker）
 ├── image_loader.py           # 后台解码（预览尺寸 / 全分辨率）
 ├── export_service.py         # 后台导出（进度 / Esc 取消）
@@ -174,6 +191,8 @@ PhotoCuller-source/
 ├── build_installer.bat       # 打包单文件安装器
 ├── bench_zoom.py             # 缩放流畅度回归基准（帧间隔 / jank / 成本拆解）
 ├── test_gpu_ui.py            # GPU 界面端到端冒烟测试
+├── test_sysmon.py            # 资源采样测试（格式化、降级、LUID 解析、采样线程）
+├── test_version.py           # 版本链路测试（含从已构建 exe 读回版本资源）
 ├── test_gpu_accel.py         # 显卡检测 / 加速方案测试（分类、合并、持久化、注册表往返）
 ├── test_entry_dispatch.py    # 入口分发 / 降级行为测试
 ├── test_smoke.py             # Tk 功能冒烟测试
@@ -202,19 +221,44 @@ PhotoCuller-source/
 
 详见 [Photo Culler-实现说明.md](Photo%20Culler-%E5%AE%9E%E7%8E%B0%E8%AF%B4%E6%98%8E.md)。
 
+## 版本号
+
+**`config.py` 里的 `APP_VERSION` 是唯一的版本来源。** 改这一个字符串，以下全部自动跟随：
+
+| 跟随项 | 位置 |
+|---|---|
+| exe 的 Windows 版本资源 | 两个 exe 都会盖章，右键「属性 → 详细信息」可见 |
+| 安装包文件名 | `dist\Photo-Culler-Setup<版本>.exe`，**不用手动改名** |
+| 窗口标题 | `Photo Culler <版本> — <文件夹>` |
+| 右侧边栏底部的版本页脚 | `v<版本>`，点击打开「关于」 |
+| 「更多… → 关于 Photo Culler…」 | 版本、版本资源、渲染器、安装包名称（并复制到剪贴板） |
+| `app.py --self-test` 首行 | 报告版本，便于排查"你装的是哪个版本" |
+| 安装程序窗口 | 标题与说明里都带版本 |
+
+`version_info.py` 负责把 `APP_VERSION` 转成 PyInstaller 需要的版本资源文本（用 PyInstaller 自己的 `VSVersionInfo` 序列化，而不是手写结构），并派生安装包名。两个 `.spec` 在构建时**现场生成**该文件（写到 `build/`），所以不依赖任何提交进仓库的中间产物，也不可能出现"源码是 1.1.0、安装包却是旧版本"。
+
+`test_version.py` 会把这条链子钉住：常量 → 版本资源字段 → 生成文件能被 PyInstaller 反序列化 → 每个消费方都引用常量（而不是硬编码）→ `installer.iss` 的 `MyAppVersion` 与常量一致 → **并从已构建的 exe 里把版本资源读回来比对**，dist 过期会直接报错。
+
+> 升级流程：改 `config.APP_VERSION` → 依次跑 `build_exe.bat`、`build_installer.bat` → `python test_version.py` 复核产物。
+> `installer.iss` 是**可选的手动路径**（`ISCC.exe installer.iss`），自动化构建走的是 `Installer.spec`；若要用它，记得让 `MyAppVersion` 与常量保持一致（测试会检查）。
+
 ## 打包 / 安装
 
 ```bat
 build_exe.bat          :: PyInstaller onedir → dist\PhotoCuller\Photo Culler.exe
-build_installer.bat    :: 生成一键安装程序 dist\Photo-Culler-Setup.exe
+build_installer.bat    :: 生成一键安装程序 dist\Photo-Culler-Setup<版本>.exe
 ```
 
-`Photo-Culler-Setup.exe` 会把程序装到 `%LOCALAPPDATA%\Programs\PhotoCuller`，并可创建桌面/开始菜单快捷方式。需要 Inno Setup 时也可用 `installer.iss` 自行编译。
+安装包会把程序装到 `%LOCALAPPDATA%\Programs\PhotoCuller`，并可创建桌面/开始菜单快捷方式。需要 Inno Setup 时也可用 `installer.iss` 自行编译。
+
+> ⚠️ `dist\` 里残留的旧安装包（例如 `Photo-Culler-Setup1.0.1.exe`）**不含后续修复**，双击它会装出旧版本。构建完请认准带当前版本号的那个文件。
 
 ## 测试
 
 ```bash
-python app.py --self-test        # 运行时自检：真实建 Tk 根窗 + 探测 GPU 依赖 + 实跑显卡检测，逐行报结论
+python app.py --self-test        # 运行时自检：首行报版本 + 真实建 Tk 根窗 + GPU 依赖 + 实跑显卡检测与资源采样
+python test_version.py           # 版本链路：常量→版本资源→规格文件→已构建 exe 实际盖章
+python test_sysmon.py            # 资源采样：格式化、缺失降级为「—」、LUID 解析、采样线程启停
 python test_gpu_ui.py            # GPU 界面端到端（扫描/导航/GPU 缩放/全分辨率/筛选/删除/导出/布局/加速菜单）
 python test_gpu_accel.py         # 显卡检测与加速方案（分类规则、多源合并、设置往返、注册表可撤销）
 python test_entry_dispatch.py    # 入口分发与降级提示

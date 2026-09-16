@@ -2,6 +2,18 @@
 
 APP_NAME = "Photo Culler"
 
+# Single source of truth for the release version.
+#
+# Bump this one string and every artifact follows: the Windows version resource
+# stamped into both exes (so 属性 → 详细信息 shows it), the window title, the
+# 关于 dialog, the right sidebar footer, `--self-test`, and the installer's
+# output filename (`Photo-Culler-Setup<version>.exe`). Nothing else should
+# hardcode a version — see `version_info.py`.
+APP_VERSION = "1.1.0"
+
+# Shown as the publisher in the exe's version resource.
+APP_PUBLISHER = "cH3nj4c"
+
 # Camera RAW formats decoded via rawpy / LibRaw (vendor-specific + DNG).
 RAW_EXTENSIONS = {
     ".dng",  # Adobe / Leica / Ricoh / phone DNG

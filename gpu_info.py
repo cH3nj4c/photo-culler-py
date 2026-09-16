@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import ctypes
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 # --- classification ---------------------------------------------------------
@@ -115,6 +115,12 @@ class Adapter:
     source: str = ""
     # True when DXGI can hand this adapter to an application right now.
     runtime_visible: bool = False
+    # DXGI's AdapterLuid as an unsigned 64-bit int, or None when the adapter
+    # came from the registry alone. The PDH GPU counters identify adapters by
+    # the same LUID, so this is what lets a utilisation figure be labelled with
+    # the adapter's real name. Registers as None rather than 0 so "unknown"
+    # cannot be confused with a genuine LUID of zero.
+    luid: int | None = None
 
     @property
     def kind_label(self) -> str:
@@ -161,6 +167,20 @@ class GpuReport:
     @property
     def is_hybrid(self) -> bool:
         return self.has_discrete and self.has_integrated
+
+    @property
+    def total_dedicated_vram_mb(self) -> int:
+        """Dedicated VRAM summed across hardware adapters.
+
+        Software adapters are excluded (they have none). Summing matches how
+        the PDH ``\\GPU Adapter Memory`` counter is summed for the used side, so
+        used and total are measured the same way.
+        """
+        return sum(a.dedicated_vram_mb for a in self.adapters if a.kind != SOFTWARE)
+
+    def adapter_names_by_luid(self) -> dict[int, str]:
+        """LUID → adapter name, for labelling per-adapter GPU utilisation."""
+        return {a.luid: a.name for a in self.adapters if a.luid is not None}
 
     def headline(self) -> str:
         """One-line summary for a menu item or a status panel."""
@@ -256,6 +276,10 @@ def _query_dxgi() -> list[Adapter]:
                             dedicated_vram_mb=int(desc.DedicatedVideoMemory // 1048576),
                             source="dxgi",
                             runtime_visible=not is_software,
+                            # Mask to 64 bits: AdapterLuid is a signed
+                            # LARGE_INTEGER, and the PDH counters express the
+                            # same value as two unsigned halves.
+                            luid=int(desc.AdapterLuid) & 0xFFFFFFFFFFFFFFFF,
                         )
                     )
             finally:
@@ -364,24 +388,19 @@ def merge_sources(*groups: list[Adapter]) -> list[Adapter]:
                 merged.append(adapter)
                 continue
             idx = merged.index(hit)
-            prefer = adapter
-            if adapter.kind == UNKNOWN and hit.kind != UNKNOWN:
-                prefer = Adapter(
-                    name=hit.name, kind=hit.kind, vendor=hit.vendor,
-                    vendor_id=hit.vendor_id,
-                    dedicated_vram_mb=hit.dedicated_vram_mb,
-                    driver_version=hit.driver_version,
-                    source=hit.source, runtime_visible=hit.runtime_visible,
-                )
-            merged[idx] = Adapter(
-                name=prefer.name,
-                kind=prefer.kind,
+            # Whichever side already knows the kind wins; otherwise the later
+            # source's answer stands. `replace` is used so every other field
+            # (including ones added later) is carried over instead of being
+            # silently dropped by a hand-written constructor call.
+            prefer = hit if (adapter.kind == UNKNOWN and hit.kind != UNKNOWN) else adapter
+            merged[idx] = replace(
+                prefer,
                 vendor=hit.vendor or adapter.vendor,
                 vendor_id=hit.vendor_id or adapter.vendor_id,
                 dedicated_vram_mb=hit.dedicated_vram_mb or adapter.dedicated_vram_mb,
                 driver_version=hit.driver_version or adapter.driver_version,
-                source=hit.source,
                 runtime_visible=hit.runtime_visible or adapter.runtime_visible,
+                luid=hit.luid if hit.luid is not None else adapter.luid,
             )
     return merged
 
@@ -398,26 +417,8 @@ def apply_vram_heuristic(adapters: list[Adapter]) -> list[Adapter]:
         if a.kind != UNKNOWN:
             out.append(a)
             continue
-        if a.dedicated_vram_mb >= 1024:
-            out.append(
-                Adapter(
-                    name=a.name, kind=DISCRETE, vendor=a.vendor or "unknown",
-                    vendor_id=a.vendor_id,
-                    dedicated_vram_mb=a.dedicated_vram_mb,
-                    driver_version=a.driver_version, source=a.source,
-                    runtime_visible=a.runtime_visible,
-                )
-            )
-        else:
-            out.append(
-                Adapter(
-                    name=a.name, kind=INTEGRATED, vendor=a.vendor or "unknown",
-                    vendor_id=a.vendor_id,
-                    dedicated_vram_mb=a.dedicated_vram_mb,
-                    driver_version=a.driver_version, source=a.source,
-                    runtime_visible=a.runtime_visible,
-                )
-            )
+        kind = DISCRETE if a.dedicated_vram_mb >= 1024 else INTEGRATED
+        out.append(replace(a, kind=kind, vendor=a.vendor or "unknown"))
     return out
 
 
@@ -465,6 +466,7 @@ def report_as_dict(report: GpuReport) -> dict[str, Any]:
                 "driver": a.driver_version,
                 "source": a.source,
                 "active": a.runtime_visible,
+                "luid": a.luid,
             }
             for a in report.adapters
         ],

@@ -14,6 +14,7 @@ Recycle Bin, same as test_delete.py.
 
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -40,6 +41,7 @@ from vispy import app as vispy_app  # noqa: E402
 vispy_app.use_app("pyside6")
 
 import qt_ui  # noqa: E402
+import config  # noqa: E402
 from config import THUMB_SLOT  # noqa: E402
 import gpu_accel  # noqa: E402
 import gpu_info  # noqa: E402
@@ -432,6 +434,10 @@ sidebar = window.centralWidget().findChild(QWidget, "sidebar")
 assert sidebar is not None, "the sidebar widget is missing"
 assert sidebar.x() == 0, f"sidebar should hug the left edge, x={sidebar.x()}"
 assert sidebar.width() == qt_ui.SIDEBAR_WIDTH, sidebar.width()
+# Context lives in the mirrored right sidebar; resolved here because step 14
+# needs it to tell "action out of place" from "legitimate context control".
+right_side = window.centralWidget().findChild(QWidget, "sidebarRight")
+assert right_side is not None, "the right sidebar is missing"
 
 sidebar_buttons = sidebar.findChildren(QPushButton)
 assert len(sidebar_buttons) >= 9, [b.text() for b in sidebar_buttons]
@@ -441,11 +447,21 @@ for button in sidebar_buttons:
         f"{button.text()} is too narrow to read as a menu entry"
     )
 stranded = [
-    b.text()
+    (b.text(), b.objectName())
     for b in window.centralWidget().findChildren(QPushButton)
-    if not sidebar.isAncestorOf(b)
+    if not sidebar.isAncestorOf(b) and not right_side.isAncestorOf(b)
 ]
-assert not stranded, f"buttons left outside the sidebar: {stranded}"
+assert not stranded, f"buttons left outside both sidebars: {stranded}"
+# The right sidebar is context-only, so it may hold the version footer but no
+# action control — otherwise the two columns stop being "actions" vs "state".
+right_buttons = right_side.findChildren(QPushButton)
+assert [b.objectName() for b in right_buttons] == ["link"], [
+    (b.text(), b.objectName()) for b in right_buttons
+]
+assert window.version_button.objectName() == "link"
+assert config.APP_VERSION in window.version_button.text(), window.version_button.text()
+# ...and the app must show which build it is, which is the whole point.
+assert config.APP_VERSION in window.windowTitle(), window.windowTitle()
 
 # The preview column must start where the sidebar ends.
 for widget, label in ((window._stack, "preview"), (window.filmstrip, "filmstrip")):
@@ -463,8 +479,7 @@ print(f"[14] {len(sidebar_buttons)} actions are in a {sidebar.width()}px left si
 # --- 15. folder context lives in the right sidebar --------------------------
 # The folder name sits opposite the actions, in its own column pinned to the
 # right edge, so the left column stays a pure action menu.
-right_side = window.centralWidget().findChild(QWidget, "sidebarRight")
-assert right_side is not None, "the right sidebar is missing"
+# (`right_side` was resolved in step 14.)
 assert right_side.width() == qt_ui.SIDEBAR_RIGHT_WIDTH, right_side.width()
 
 central_w = window.centralWidget().width()
@@ -482,10 +497,13 @@ assert name_x >= preview_x + window._stack.width(), (
     f"folder name (x={name_x}) is not to the right of the preview column"
 )
 
-# No action may have drifted into the right sidebar.
-assert not right_side.findChildren(QPushButton), (
-    f"buttons leaked into the right sidebar: "
-    f"{[b.text() for b in right_side.findChildren(QPushButton)]}"
+# No *action* may have drifted into the right sidebar. The version footer is
+# the one deliberate control there and is asserted separately in step 14.
+action_buttons = [
+    b for b in right_side.findChildren(QPushButton) if b.objectName() != "link"
+]
+assert not action_buttons, (
+    f"action buttons leaked into the right sidebar: {[b.text() for b in action_buttons]}"
 )
 
 # The counter must be populated for the folder that is open, and follow the
@@ -613,11 +631,63 @@ assert gpu_accel.get_scheme("software").environment()[gpu_accel.ENV_UI] == "tk"
 assert gpu_accel.force_software_opengl_requested() is False
 print("[16e] compatibility scheme targets the CPU (Tk) shell, not software OpenGL")
 
-# --- 17. clean shutdown ---
+# --- 17. live resource readouts in the right sidebar ------------------------
+# Four rows: total RAM, this app's RAM, GPU utilisation, VRAM. They come from a
+# background sampler, so the RAM rows must be filled from the very first paint
+# while the GPU rows may briefly read "—" until PDH has two samples to diff.
+titles = list(window.resource_value_labels)
+assert titles == ["内存", "本程序", "GPU", "显存"], titles
+for title, label in window.resource_value_labels.items():
+    assert right_side.isAncestorOf(label), f"{title} left the right sidebar"
+assert right_side.isAncestorOf(window.resource_note_label)
+# Labels only — the right sidebar still holds no action buttons except the
+# version footer, which step 14 already pins down.
+assert not [b for b in right_side.findChildren(QPushButton) if b.objectName() != "link"]
+
+assert window.system_monitor._thread is not None, "sampler was never started"
+assert window.system_monitor._thread.daemon, "sampler must not block exit"
+
+ram_text = window.resource_value_labels["内存"].text()
+assert re.match(r"^\d+\.\d+/\d+\.\d+ GB \d+%$", ram_text), ram_text
+app_text = window.resource_value_labels["本程序"].text()
+assert app_text.endswith("MB") and app_text != "0 MB", app_text
+
+# The GPU rows fill in once the sampler has published a real reading.
+wait_for(
+    lambda: all(
+        window.resource_value_labels[k].text() != "—" for k in ("GPU", "显存")
+    )
+    or window.system_monitor.latest().gpu_percent is None,
+    timeout=6.0,
+    what="a resource sample",
+)
+snapshot = window.system_monitor.latest()
+gpu_text = window.resource_value_labels["GPU"].text()
+vram_text = window.resource_value_labels["显存"].text()
+if snapshot.gpu_percent is None:
+    # No PDH on this host: the panel must say so rather than claim 0%.
+    assert gpu_text == "—" and vram_text == "—", (gpu_text, vram_text)
+    assert window.resource_note_label.text(), "a missing measurement needs a reason"
+    print(f"[17] resource panel filled; GPU counters unavailable here "
+          f"({window.resource_note_label.text()})")
+else:
+    assert gpu_text.endswith("%"), gpu_text
+    assert re.match(r"^\d+\.\d+/\d+\.\d+ GB \d+%$", vram_text), vram_text
+    tip = window.resource_value_labels["GPU"].toolTip()
+    assert "本程序 GPU" in tip, tip
+    # The VRAM denominator must be the detected dedicated VRAM, not a guess.
+    assert window.system_monitor.vram_total_mb == report.total_dedicated_vram_mb
+    print(f"[17] resource panel: 内存 {ram_text}, 本程序 {app_text}, "
+          f"GPU {gpu_text}, 显存 {vram_text}")
+
+# --- 18. clean shutdown ---
 _restore_accel_settings()
 assert gpu_accel.current_scheme_id() == (
     json.loads(_accel_saved)["accel_scheme"] if _accel_saved else "auto"
 ), "the test must leave the stored scheme as it found it"
 window.close()
 QAPP.processEvents()
+# Closing must tear the sampler down, or a daemon thread keeps touching PDH
+# while the rest of the app is already gone.
+assert window.system_monitor._thread is None, "sampler outlived the window"
 print("GPU UI SMOKE TEST PASSED")

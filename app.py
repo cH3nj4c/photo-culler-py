@@ -206,6 +206,21 @@ def _run_self_test() -> None:
     verdicts: list[str] = []
     failed = False
 
+    # Version first: a self-test report is mostly useful attached to a "which
+    # build is this?" question, so it has to lead.
+    try:
+        from config import APP_NAME, APP_VERSION
+        import version_info
+
+        verdicts.append(f"{APP_NAME} {APP_VERSION}")
+        verdicts.append(
+            "版本资源："
+            + ".".join(str(n) for n in version_info.parse_version())
+            + f"    安装包：{version_info.INSTALLER_BASENAME}.exe"
+        )
+    except Exception as exc:  # noqa: BLE001
+        verdicts.append(f"版本信息不可用：{type(exc).__name__}: {exc}")
+
     try:
         import tkinter as tk
 
@@ -264,6 +279,22 @@ def _run_self_test() -> None:
             verdicts.append("Windows 显卡偏好：源码运行，不写入注册表")
     except Exception as exc:  # noqa: BLE001
         verdicts.append(f"加速方案不可用：{type(exc).__name__}: {exc}")
+
+    # Whether the GPU counters can be opened is exactly what decides between a
+    # number and a "—" in the sidebar, so it belongs in a diagnostic report.
+    # Only `open()` is called — a real reading would need a second collection a
+    # second later, and a self-test must not sit and wait.
+    try:
+        import sysmon
+
+        counters = sysmon.PdhGpuCounters()
+        opened = counters.open()
+        reason = counters.reason
+        counters.close()
+        state = "可用" if opened else f"不可用（{reason}）"
+        verdicts.append(f"资源采样：本程序 {sysmon.app_working_set_mb()} MB；GPU 计数器{state}")
+    except Exception as exc:  # noqa: BLE001
+        verdicts.append(f"资源采样不可用：{type(exc).__name__}: {exc}")
 
     for line in verdicts:
         print(line)
