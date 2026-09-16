@@ -63,11 +63,58 @@ Windows 还需本机有 libjpeg-turbo 动态库（`turbojpeg` / `jpeg62`）。�
 
 > 说明：GPU 界面下预览与缩放不再经过 `preview_engine`，因此 DirectML/CuPy 那套 GPU 重采样开关（`PHOTOCULLER_RESAMPLE`）仅对 Tkinter 界面生效。
 
+### GPU 加速方案
+
+程序会自动检测本机的显示适配器（核显 / 独显），并给出几种可选的加速方案。入口在左侧边栏的 **加速 → GPU 加速…**，也可从「更多…」菜单进入；右侧边栏「加速」分区随时显示检测到的显卡与当前方案。
+
+检测合并三个来源，因为任何一个单独都不完整：
+
+| 来源 | 提供什么 |
+|---|---|
+| 注册表 `HKLM\SYSTEM\...\Class\{4d36e968-...}` | **已安装的**全部显示适配器（含当前会话未启用的核显）、驱动版本、真实显存 |
+| DXGI（`dxgi.dll` → `EnumAdapters1`） | 图形栈**当前可用**的适配器、`DXGI_ADAPTER_FLAG_SOFTWARE` 标志 |
+| 实时 OpenGL 上下文 | 预览**实际在用**的渲染器 |
+
+混合显卡笔记本上注册表与 DXGI 会有意义地不一致：注册表同时列出核显与独显，DXGI 只列出当前会话挂载的那块。只看 DXGI 会把「有没有核显」答错，所以两者都要。
+
+可选方案：
+
+| 方案 | 生效机制 | 何时生效 |
+|---|---|---|
+| **自动（推荐）** | 清除本应用的显卡偏好，交回 Windows 决定 | 下次启动 |
+| **独显优先（性能最强）** | 把本应用的 Windows 显卡偏好写为「高性能」（`GpuPreference=2`） | 下次启动 |
+| **核显优先（省电）** | 同上写为「省电」（`GpuPreference=1`） | 下次启动 |
+| **兼容模式（纯 CPU 渲染）** | 切到 Tkinter 界面层 + 关闭 GPU 重采样，完全不走 OpenGL | 下次启动 |
+
+机器上没有对应硬件时，该方案仍会显示但**不可选**，并标注原因（例如「未检测到独立显卡」），避免一项看起来生效却什么都没做。
+
+写入位置为 `HKCU\Software\Microsoft\DirectX\UserGpuPreferences`（Microsoft 文档中的「按应用 GPU 偏好」），**仅当前用户、可随时撤销**——选回「自动」即删除该值。源码运行时**不会**写入，因为那时进程是共用的 `python.exe`，写进去会影响机器上所有 Python 程序；安装版中此项直接生效。
+
+> 有两个方案经过实测后**故意不提供**：
+> - **ANGLE / Direct3D 后端**：Qt 6 已从官方构建中移除 ANGLE，PySide6 wheel 里没有 `libEGL.dll` / `libGLESv2.dll`，`QT_OPENGL=angle` 只会静默地什么都不做。
+> - **`QT_OPENGL=software`（Qt 内软件 OpenGL）**：Qt 自带的 `opengl32sw.dll` 是 Mesa 11.2 / GLSL **1.30**，而 VisPy 的场景着色器需要远高于此。实测在该模式下 Qt 界面**拿不到上下文**（`stage.gpu_info` 为空），预览直接坏掉——它会是陷阱而不是退路。真正的 CPU 通路是 Tkinter 界面层。
+
+设置持久化在 `%LOCALAPPDATA%\PhotoCuller\settings.json`（与选片记录分开存放，互不影响）。
+
 ## 使用
 
-```bash
-python app.py
+从源码运行（推荐，会自动挑一个装好依赖的解释器）：
+
+```bat
+run.bat
 ```
+
+或者手动指定解释器（**必须用装好依赖的那个 Python**）：
+
+```bash
+.venv-build\Scripts\python.exe app.py     # 本仓库的 venv
+```
+
+> ⚠️ 直接 `python app.py`（例如双击 `app.py`）会用系统 Python。系统 Python 通常
+> 既没有 `numpy` 也没有 `PySide6`，于是两个界面都起不来，只会弹一个启动失败对话框。
+> 这不是程序坏了，是解释器选错了 —— 用上面的 `run.bat` 即可避免。
+
+强制指定界面后端：`set PHOTOCULLER_UI=qt` / `set PHOTOCULLER_UI=tk`。
 
 启动后程序会自动弹出文件夹选择框，也可按 `O` 重新打开。
 
@@ -104,6 +151,9 @@ PhotoCuller-source/
 ├── imaging.py                # 图片解码（JPG/PNG/TIFF/DNG）
 ├── winshell.py               # HiDPI 与回收站删除
 ├── selection_store.py        # 选片记录持久化（%LOCALAPPDATA%）
+├── app_settings.py           # 用户设置持久化（%LOCALAPPDATA%\PhotoCuller\settings.json）
+├── gpu_info.py               # 显卡检测（注册表 + DXGI + 实时 GL，核显/独显分类）
+├── gpu_accel.py              # 可选加速方案（环境变量 + Windows 按应用 GPU 偏好）
 ├── jpeg_preloader.py         # JPEG 预览 LRU + 滑动窗口预载（多 worker）
 ├── image_loader.py           # 后台解码（预览尺寸 / 全分辨率）
 ├── export_service.py         # 后台导出（进度 / Esc 取消）
@@ -119,7 +169,12 @@ PhotoCuller-source/
 ├── preview_engine.py         # Tk 预览几何 + 双帧后台渲染（zoom 相对原图像素）
 ├── resample_backend.py       # Tk 重采样后端（CPU / DirectML / CUDA）
 ├── requirements.txt
+├── run.bat                   # 从源码启动（自动挑一个装好依赖的解释器）
+├── build_exe.bat             # 打包 onedir 版本（dist\PhotoCuller）
+├── build_installer.bat       # 打包单文件安装器
+├── bench_zoom.py             # 缩放流畅度回归基准（帧间隔 / jank / 成本拆解）
 ├── test_gpu_ui.py            # GPU 界面端到端冒烟测试
+├── test_gpu_accel.py         # 显卡检测 / 加速方案测试（分类、合并、持久化、注册表往返）
 ├── test_entry_dispatch.py    # 入口分发 / 降级行为测试
 ├── test_smoke.py             # Tk 功能冒烟测试
 ├── test_delete.py            # 删除功能测试
@@ -132,7 +187,8 @@ PhotoCuller-source/
 - **UI 分发**：`app.py` 按 `PHOTOCULLER_UI` 选择 `qt_ui`（默认）或 `ui`；Tkinter 缺失或 Qt 依赖缺失时自动走可用的那一侧
 - **GPU 预览**：`gpu_preview.py` 把预览图作为 OpenGL 纹理上传，场景坐标恒为**原图像素**；`ZoomPlan` 负责纯数学的缩放钳制，`SmoothPanZoomCamera` 实现光标锚定的缓动滚轮缩放。GPU 上下文在窗口首次显示后才初始化
 - **缩放语义**：`pixel_zoom()` = 每个原图像素占多少屏幕像素（`1.0` 即 100%）；适应窗口不会放大小图；上限为 `ZOOM_MAX_PIXEL_SCALE`（4×）
-- **100% 检视**：缩放超过"适应窗口 + 8%"时按需读入全分辨率原图并替换纹理，场景坐标不变所以视野位置保持不变；回到适应窗口释放全图
+- **100% 检视**：只有当预览纹理**真的被放大**到 1:1 以上（`pixel_zoom` 超过预览的 1:1 比例 × 1.02）才按需读入全分辨率原图并替换纹理，场景坐标不变所以视野位置保持不变；回到适应窗口释放全图。整条升级链路（请求 → 解码 → 换图）都等滚轮停下后才发起，因此换图不会打断手势
+- **缩放流畅度**：24MP 照片实测缩放手势中最大帧间隔 ≤20ms、无掉帧（`bench_zoom.py` 可复测）
 - **当前图解码**：后台线程池完成；JPEG 命中滑动窗口缓存时直接复用
 - **JPG 缓存**：只缓存**预览尺寸**（长边 ≤2560）解码图，数量按系统总内存/空闲内存自适应（约 6–60 张）
 - **导出**：后台拷贝，状态栏显示进度，导出中按 `Esc` 可取消
@@ -158,11 +214,14 @@ build_installer.bat    :: 生成一键安装程序 dist\Photo-Culler-Setup.exe
 ## 测试
 
 ```bash
-python app.py --self-test        # 运行时自检
-python test_gpu_ui.py            # GPU 界面端到端（扫描/导航/GPU 缩放/全分辨率/筛选/删除/导出）
+python app.py --self-test        # 运行时自检：真实建 Tk 根窗 + 探测 GPU 依赖 + 实跑显卡检测，逐行报结论
+python test_gpu_ui.py            # GPU 界面端到端（扫描/导航/GPU 缩放/全分辨率/筛选/删除/导出/布局/加速菜单）
+python test_gpu_accel.py         # 显卡检测与加速方案（分类规则、多源合并、设置往返、注册表可撤销）
 python test_entry_dispatch.py    # 入口分发与降级提示
 python test_smoke.py             # Tk 界面功能冒烟测试（预览/导航/缩放/保留/筛选）
 python test_delete.py            # 删除功能测试（回收站调用/单张删除/整组删除）
 ```
 
 `test_gpu_ui.py` 用 `WA_DontShowOnScreen` 创建隐形窗口，因此会真实创建 OpenGL 上下文；删除步骤会真实调用回收站。
+
+> 打包脚本 `build_exe.bat` / `build_installer.bat` 和 `run.bat` **必须是 CRLF 行尾**：它们含 `for` / `if` 嵌套块，LF-only 会被 cmd 解析错位。修改后请复核行尾，并且**不要在构建运行期间编辑这几个脚本**（cmd 边读边执行，会导致 PyInstaller 被跑两遍）。

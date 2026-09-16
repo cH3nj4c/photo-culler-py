@@ -27,7 +27,18 @@ os.environ.setdefault("QT_API", "pyside6")
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QFont,
+    QIcon,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -40,6 +51,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -67,6 +79,8 @@ from domain import (
 )
 from export_service import ExportService
 from gpu_preview import PhotoStage
+import gpu_accel
+import gpu_info
 from image_loader import ImageLoader
 from jpeg_preloader import JpegCache, JpegPreloader
 from selection_store import load_selection, save_selection
@@ -76,6 +90,15 @@ from thumbnail_service import ThumbnailService
 from winshell import send_to_recycle_bin
 
 THUMB_PIX_HEIGHT = 116  # 8px frame + 88px thumb + filename strip
+# Clear air between the slot bottom and the scrollbar, so the filename painted
+# at the bottom of every slot always stays readable. The scrollbar's own room
+# is measured in `_fit_strip_height`, not guessed.
+STRIP_NAME_GAP = 8
+# Every action lives in a settings-style sidebar down the left edge; the
+# per-folder context (folder name, counters) lives in a mirror sidebar on the
+# right edge, so the left column stays a pure action menu.
+SIDEBAR_WIDTH = 172
+SIDEBAR_RIGHT_WIDTH = 196
 HINT_TEXT = (
     "← → 切换    Space 保留    Del 删除    F 模式    "
     "滚轮缩放    Z 适合 / 100%    Esc 取消导出    点击查看全部快捷键（F1）"
@@ -83,7 +106,17 @@ HINT_TEXT = (
 
 DARK_QSS = """
 QWidget { background: #171A1F; color: #E8EAED; font-family: "Segoe UI"; font-size: 10pt; }
-QLabel#folder { font-size: 11pt; font-weight: 600; }
+QLabel#folder { font-size: 10pt; font-weight: 600; padding: 2px 2px 6px 2px; }
+QLabel#section { color: #6F7783; font-size: 9pt; font-weight: 600; padding: 8px 2px 1px 2px; }
+QWidget#sidebar { background: #14171C; border-right: 1px solid #22262E; }
+QWidget#sidebar QPushButton { text-align: left; padding: 7px 10px; }
+QWidget#sidebarRight { background: #14171C; border-left: 1px solid #22262E; }
+QLabel#folderName {
+    background: #1B2029; border: 1px solid #262C36; border-radius: 6px;
+    padding: 6px 8px; font-size: 10pt; font-weight: 600;
+}
+QLabel#meta { color: #AEB6C2; }
+QLabel#metaDim { color: #6F7783; }
 QLabel#hint { background: #14171C; color: #8B939E; padding: 5px 16px; }
 QLabel#zoom { color: #4f9cff; font-weight: 600; }
 QLabel#preload { color: #8B939E; }
@@ -150,11 +183,29 @@ def freeze_startup_garbage() -> None:
 class FilmStrip(QListWidget):
     """Icon-mode strip whose mouse wheel scrolls horizontally."""
 
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        # Sub-notch wheel deltas (precision trackpads, free-spinning wheels)
+        # are accumulated here instead of being rounded away to nothing.
+        self._wheel_remainder = 0.0
+
     def wheelEvent(self, event) -> None:  # noqa: N802
-        delta = event.angleDelta().y()
-        if delta:
-            bar = self.horizontalScrollBar()
-            bar.setValue(bar.value() + int(-delta / 120.0) * 96)
+        pixel = event.pixelDelta()
+        if not pixel.isNull():
+            # Trackpads usually report real pixels.
+            step = float(pixel.y() or pixel.x())
+        else:
+            angle = event.angleDelta()
+            # A horizontal gesture carries x, a vertical one y; accept both so
+            # a sideways swipe on a trackpad still scrolls the strip.
+            step = (angle.y() or angle.x()) / 120.0 * 96.0
+        if step:
+            total = self._wheel_remainder - step
+            whole = int(total)
+            self._wheel_remainder = total - whole
+            if whole:
+                bar = self.horizontalScrollBar()
+                bar.setValue(bar.value() + whole)
         event.accept()
 
 
@@ -169,7 +220,9 @@ class PhotoCullerWindow(QMainWindow):
             except Exception:
                 continue
         self.resize(1440, 900)
-        self.setMinimumSize(QSize(920, 620))
+        # The sidebar takes a fixed slice off the left, so keep enough width
+        # that the preview and the hint bar are not squeezed at minimum size.
+        self.setMinimumSize(QSize(1040, 620))
 
         # Folder session / selection state (mirrors ui.py).
         self.folder: Path | None = None
@@ -196,6 +249,9 @@ class PhotoCullerWindow(QMainWindow):
         self._after_show_done = False
         self._syncing_filmstrip = False
         self.auto_open_enabled = True
+        # Cached hardware report; detection touches the registry and DXGI, so
+        # it runs once and is reused by the menu, the dialog and the panel.
+        self._gpu_report: gpu_info.GpuReport | None = None
 
         # Background services. PreviewEngine/resample_backend are not needed:
         # the GPU stage replaces the whole crop+resample pipeline.
@@ -233,45 +289,130 @@ class PhotoCullerWindow(QMainWindow):
     # --- layout / chrome -------------------------------------------------
 
     def _build_ui(self) -> None:
-        toolbar = QWidget()
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(14, 8, 14, 8)
-        toolbar_layout.setSpacing(6)
-
-        self.folder_label = QLabel("尚未打开文件夹")
-        self.folder_label.setObjectName("folder")
-        toolbar_layout.addWidget(self.folder_label)
-        toolbar_layout.addStretch(1)
-
-        def button(text, callback, *, name=None, checkable=False):
-            btn = QPushButton(text)
+        def make_button(
+            label: str,
+            callback,
+            *,
+            name: str | None = None,
+            checkable: bool = False,
+            tip: str = "",
+        ) -> QPushButton:
+            btn = QPushButton(label)
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             if name:
                 btn.setObjectName(name)
             if checkable:
                 btn.setCheckable(True)
+            if tip:
+                btn.setToolTip(tip)
             btn.clicked.connect(callback)
-            toolbar_layout.addWidget(btn)
             return btn
 
-        button("打开", self.open_folder)
-        self.keep_button = button("保留", self.toggle_keep, name="accent")
-        self.delete_button = button("删除", self.delete_current, name="danger")
-        self.keep_mode_button = button("模式", self.cycle_keep_mode)
-        self.filter_button = button(
-            "只看保留", self.toggle_filter, checkable=True
-        )
-        button("适合", self.zoom_fit)
-        button("100%", self.zoom_actual)
-        button("导出", self.export_kept)
-        self.more_button = button("⋯", self._show_more_menu)
+        # --- left sidebar: every action, grouped like a settings menu ---
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(12, 12, 12, 12)
+        side.setSpacing(5)
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(toolbar)
+        def section(title: str) -> None:
+            label = QLabel(title)
+            label.setObjectName("section")
+            side.addWidget(label)
+
+        section("文件")
+        side.addWidget(make_button("打开文件夹", self.open_folder, tip="O"))
+        side.addWidget(make_button("导出保留照片", self.export_kept, tip="E"))
+
+        section("选片")
+        self.keep_button = make_button(
+            "保留 / 取消", self.toggle_keep, name="accent", tip="Space"
+        )
+        side.addWidget(self.keep_button)
+        self.keep_mode_button = make_button("模式", self.cycle_keep_mode, tip="F")
+        side.addWidget(self.keep_mode_button)
+        # objectName "toggle" is what the :checked rule in DARK_QSS keys on;
+        # without it the filter button showed no sign of being switched on.
+        self.filter_button = make_button(
+            "只看保留",
+            self.toggle_filter,
+            name="toggle",
+            checkable=True,
+            tip="只显示已保留的照片",
+        )
+        side.addWidget(self.filter_button)
+
+        section("编辑")
+        self.delete_button = make_button(
+            "删除到回收站", self.delete_current, name="danger", tip="Del"
+        )
+        side.addWidget(self.delete_button)
+
+        section("视图")
+        side.addWidget(make_button("适合窗口", self.zoom_fit, tip="Z"))
+        side.addWidget(make_button("100% 实际尺寸", self.zoom_actual, tip="1"))
+
+        section("加速")
+        self.accel_button = make_button(
+            "GPU 加速…", self._show_accel_menu, tip="选择显卡加速方案 / 查看显卡状态"
+        )
+        side.addWidget(self.accel_button)
+
+        side.addStretch(1)
+        self.more_button = make_button("更多…", self._show_more_menu, tip="F1 快捷键")
+        side.addWidget(self.more_button)
+        sidebar.setFixedWidth(SIDEBAR_WIDTH)
+
+        # --- right sidebar: per-folder context (name, counts, preload) ---
+        sidebar_right = QWidget()
+        sidebar_right.setObjectName("sidebarRight")
+        sider = QVBoxLayout(sidebar_right)
+        sider.setContentsMargins(12, 12, 12, 12)
+        sider.setSpacing(5)
+
+        folder_header = QLabel("当前文件夹")
+        folder_header.setObjectName("section")
+        sider.addWidget(folder_header)
+
+        self.folder_label = QLabel("尚未打开文件夹")
+        self.folder_label.setObjectName("folderName")
+        self.folder_label.setWordWrap(True)
+        self.folder_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        sider.addWidget(self.folder_label)
+
+        self.folder_count_label = QLabel("")
+        self.folder_count_label.setObjectName("metaDim")
+        sider.addWidget(self.folder_count_label)
+
+        sider.addStretch(1)
+
+        # Acceleration state, pinned at the bottom: what hardware was detected
+        # and which scheme is currently selected. Read-only context.
+        accel_header = QLabel("加速")
+        accel_header.setObjectName("section")
+        sider.addWidget(accel_header)
+
+        self.accel_scheme_label = QLabel("")
+        self.accel_scheme_label.setObjectName("meta")
+        self.accel_scheme_label.setWordWrap(True)
+        sider.addWidget(self.accel_scheme_label)
+
+        self.accel_gpu_label = QLabel("")
+        self.accel_gpu_label.setObjectName("metaDim")
+        self.accel_gpu_label.setWordWrap(True)
+        sider.addWidget(self.accel_gpu_label)
+
+        sidebar_right.setFixedWidth(SIDEBAR_RIGHT_WIDTH)
+
+        # --- right column: preview, hint bar, filmstrip ---
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
 
         # Preview stage + empty-state page.
         self.stage = PhotoStage()
@@ -284,11 +425,11 @@ class PhotoCullerWindow(QMainWindow):
         self._stack_layout.addWidget(self.stage)
         self._stack_layout.addWidget(self._empty_label)
         self._show_empty_page(True)
-        layout.addWidget(self._stack, 1)
+        right_layout.addWidget(self._stack, 1)
 
         hint = QLabel(HINT_TEXT)
         hint.setObjectName("hint")
-        layout.addWidget(hint)
+        right_layout.addWidget(hint)
 
         self.filmstrip = FilmStrip()
         self.filmstrip.setViewMode(QListWidget.ViewMode.IconMode)
@@ -305,10 +446,17 @@ class PhotoCullerWindow(QMainWindow):
         self.filmstrip.setSpacing(6)
         self.filmstrip.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.filmstrip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.filmstrip.setFixedHeight(THUMB_PIX_HEIGHT + 18)
+        self._fit_strip_height()
         self.filmstrip.currentRowChanged.connect(self._on_filmstrip_row_changed)
-        layout.addWidget(self.filmstrip)
+        right_layout.addWidget(self.filmstrip)
 
+        central = QWidget()
+        layout = QHBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(sidebar)
+        layout.addWidget(right, 1)
+        layout.addWidget(sidebar_right)
         self.setCentralWidget(central)
 
         status_host = QWidget()
@@ -325,6 +473,25 @@ class PhotoCullerWindow(QMainWindow):
         status_layout.addWidget(self.zoom_label)
         statusBar = self.statusBar()
         statusBar.addWidget(status_host, 1)
+
+    def _fit_strip_height(self) -> None:
+        """Size the strip so the scrollbar can never cover the photo names.
+
+        The slot's filename is painted at the bottom of each 148x116 pixmap, so
+        the viewport must be at least a slot tall. How much room the horizontal
+        scrollbar needs depends on the style, the font metrics and the display
+        scale — hardcoding it is what let the scrollbar cover the names on some
+        setups.
+
+        The room is taken from the scrollbar's own size hint plus the scroll
+        area's frame, which are available before any layout pass (measuring
+        ``height() - viewport().height()`` is *not*: both are provisional until
+        the widget has been laid out, and the value they produce is garbage).
+        """
+        strip = self.filmstrip
+        bar = strip.horizontalScrollBar()
+        overhead = bar.sizeHint().height() + 2 * max(1, strip.frameWidth())
+        strip.setFixedHeight(THUMB_PIX_HEIGHT + overhead + STRIP_NAME_GAP)
 
     def _show_empty_page(self, empty: bool) -> None:
         self._empty_label.setVisible(empty)
@@ -362,9 +529,188 @@ class PhotoCullerWindow(QMainWindow):
         menu.addAction("全部不保留", self.clear_all_kept)
         menu.addAction("重置所有 RAW/JPG 模式", self.reset_all_pair_modes)
         menu.addSeparator()
+        menu.addAction("GPU 加速…", self._show_accel_menu)
         menu.addAction("快捷键说明", self._show_shortcuts)
         point = self.more_button.mapToGlobal(self.more_button.rect().bottomLeft())
         menu.exec(point)
+
+    # --- GPU acceleration --------------------------------------------------
+
+    def gpu_report(self) -> gpu_info.GpuReport:
+        """Detected hardware, cached. Refreshes once the GL context is known."""
+        stage_info = self.stage.gpu_info
+        if self._gpu_report is None or (
+            stage_info and not self._gpu_report.renderer
+        ):
+            self._gpu_report = gpu_info.detect_gpu(
+                renderer=str((stage_info or {}).get("renderer", "")),
+                opengl_version=str((stage_info or {}).get("opengl", "")),
+                gl_vendor=str((stage_info or {}).get("vendor", "")),
+            )
+        return self._gpu_report
+
+    def _update_accel_panel(self) -> None:
+        report = self.gpu_report()
+        # What this process is running under (env wins), not just what is
+        # stored — otherwise the panel would claim "自动" while the renderer is
+        # actually software.
+        active_id = gpu_accel.effective_scheme_id()
+        stored_id = gpu_accel.current_scheme_id()
+        scheme = gpu_accel.get_scheme(active_id)
+        available, reason = gpu_accel.scheme_availability(scheme, report)
+        state = scheme.label if available else f"{scheme.label}（{reason}）"
+        if stored_id != active_id:
+            # The choice was made after this process started, so the OpenGL
+            # side of it cannot take effect until the next launch.
+            state += f" → {gpu_accel.get_scheme(stored_id).label}（重启后生效）"
+        self.accel_scheme_label.setText(f"方案：{state}")
+        self.accel_gpu_label.setText(report.headline())
+        tip = (
+            f"当前方案：{scheme.label}\n"
+            f"{scheme.summary}\n\n"
+            f"检测到的显卡：\n"
+            + "\n".join(f"  · {a.kind_label}：{a.describe()}" for a in report.adapters)
+        )
+        if report.renderer:
+            tip += f"\n\n实际渲染器：{report.renderer}"
+        self.accel_scheme_label.setToolTip(tip)
+        self.accel_gpu_label.setToolTip(tip)
+
+    def build_accel_menu(self) -> QMenu:
+        """Construct the acceleration menu without showing it.
+
+        Split from ``_show_accel_menu`` because ``QMenu.exec`` blocks, which
+        would make the menu impossible to inspect from a test.
+        """
+        report = self.gpu_report()
+        menu = QMenu(self)
+
+        header = menu.addAction(f"检测到：{report.headline()}")
+        header.setEnabled(False)
+        kinds = []
+        if report.has_discrete:
+            kinds.append("独立显卡")
+        if report.has_integrated:
+            kinds.append("集成显卡")
+        shape = " + ".join(kinds) if kinds else "未识别"
+        shape_item = menu.addAction(
+            f"类型：{shape}（混合显卡）" if report.is_hybrid else f"类型：{shape}"
+        )
+        shape_item.setEnabled(False)
+        menu.addSeparator()
+
+        # Exclusive radio group: the schemes are mutually exclusive by nature.
+        self._accel_action_group = QActionGroup(menu)
+        self._accel_action_group.setExclusive(True)
+        effective = gpu_accel.effective_scheme_id()
+        for scheme in gpu_accel.SCHEMES:
+            action = QAction(
+                f"{scheme.label}    — {gpu_accel.describe_effect(scheme.id, report)}",
+                menu,
+            )
+            action.setCheckable(True)
+            action.setChecked(scheme.id == effective)
+            action.setData(scheme.id)
+            available, reason = gpu_accel.scheme_availability(scheme, report)
+            if not available:
+                # Still shown, so the reason is discoverable, but not pickable.
+                action.setEnabled(False)
+                action.setToolTip(reason)
+                action.setText(f"{scheme.label}    — 不可用：{reason}")
+            else:
+                action.setToolTip(f"{scheme.summary}\n\n{scheme.detail}")
+                action.triggered.connect(
+                    lambda _checked=False, sid=scheme.id: self._select_accel_scheme(sid)
+                )
+            self._accel_action_group.addAction(action)
+            menu.addAction(action)
+
+        menu.addSeparator()
+        menu.addAction("查看显卡详情…", self._show_gpu_details)
+        return menu
+
+    def _show_accel_menu(self) -> None:
+        menu = self.build_accel_menu()
+        point = self.accel_button.mapToGlobal(self.accel_button.rect().bottomLeft())
+        menu.exec(point)
+
+    def _select_accel_scheme(self, scheme_id: str) -> None:
+        scheme = gpu_accel.get_scheme(scheme_id)
+        # Nothing to do only when both the stored choice and the running one
+        # already match; an external PHOTOCULLER_ACCEL override makes those
+        # differ, and picking the stored one must then still take effect.
+        if (
+            scheme_id == gpu_accel.current_scheme_id()
+            and scheme_id == gpu_accel.effective_scheme_id()
+        ):
+            return
+        ok, message = gpu_accel.apply_scheme(scheme_id)
+        self._update_accel_panel()
+        if not ok:
+            QMessageBox.warning(self, APP_NAME, message)
+            return
+        # Every scheme is read at process start, so say so rather than letting
+        # the user think nothing happened.
+        self._set_status(f"加速方案已切换为「{scheme.label}」· {message}")
+        QMessageBox.information(
+            self,
+            APP_NAME,
+            f"已选择「{scheme.label}」。\n\n{scheme.summary}\n\n{message}",
+        )
+
+    def _show_gpu_details(self) -> None:
+        report = self.gpu_report()
+        lines: list[str] = []
+        if report.adapters:
+            lines.append(f"检测到 {len(report.adapters)} 个显示适配器：\n")
+            for adapter in report.adapters:
+                mark = "（当前可用）" if adapter.runtime_visible else ""
+                lines.append(f"· {adapter.kind_label}：{adapter.name}{mark}")
+                detail = []
+                if adapter.vendor:
+                    detail.append(f"厂商 {adapter.vendor}")
+                if adapter.dedicated_vram_mb:
+                    detail.append(f"专用显存 {adapter.dedicated_vram_mb} MB")
+                if adapter.driver_version:
+                    detail.append(f"驱动 {adapter.driver_version}")
+                if detail:
+                    lines.append("    " + " · ".join(detail))
+            lines.append("")
+            if report.is_hybrid:
+                lines.append("这是混合显卡机器：集成显卡省电，独立显卡性能更强。")
+            elif report.has_discrete:
+                lines.append("只检测到独立显卡。")
+            elif report.has_integrated:
+                lines.append("只检测到集成显卡。")
+            lines.append("")
+        else:
+            lines.append("未能检测到显示适配器信息。\n")
+
+        if report.renderer:
+            lines.append(f"预览实际使用的渲染器：\n  {report.renderer}")
+        if report.gl_vendor:
+            lines.append(f"GL 厂商：{report.gl_vendor}")
+        if report.opengl_version:
+            lines.append(f"OpenGL 版本：{report.opengl_version}")
+        if not report.renderer:
+            lines.append("预览渲染器：尚未就绪（窗口显示后才可查询）")
+
+        lines.append("")
+        active_id = gpu_accel.effective_scheme_id()
+        stored_id = gpu_accel.current_scheme_id()
+        lines.append(f"当前加速方案：{gpu_accel.get_scheme(active_id).label}")
+        if stored_id != active_id:
+            lines.append(f"已选（重启后生效）：{gpu_accel.get_scheme(stored_id).label}")
+        lines.append(f"Windows 显卡偏好：{gpu_accel.stored_preference_label()}")
+        lines.append(
+            f"重采样后端：{gpu_accel.active_resample_mode() or '自动'}"
+        )
+        if report.errors:
+            lines.append("")
+            lines.append("检测过程中的问题：")
+            lines.extend(f"· {e}" for e in report.errors)
+
+        QMessageBox.information(self, f"{APP_NAME} — 显卡状态", "\n".join(lines))
 
     def _show_shortcuts(self) -> None:
         QMessageBox.information(
@@ -387,6 +733,9 @@ class PhotoCullerWindow(QMainWindow):
             "批量\n"
             "  Ctrl+Shift+X   全部不保留\n"
             "  Ctrl+Shift+M   重置所有模式\n\n"
+            "加速\n"
+            "  左栏「GPU 加速…」选择显卡加速方案，\n"
+            "  并查看检测到的显卡状态\n\n"
             "F1 或 ？ 可再次打开本说明",
         )
 
@@ -397,6 +746,15 @@ class PhotoCullerWindow(QMainWindow):
         self._after_show_done = True
         self.stage.initialize_gpu_info()
         freeze_startup_garbage()
+        # Now that the widget is polished, re-apply: the scrollbar's real cost
+        # depends on the style that only became active once shown.
+        self._fit_strip_height()
+        # Hardware detection is best-effort and must never block the window
+        # from appearing, so it happens here rather than in the constructor.
+        try:
+            self._update_accel_panel()
+        except Exception:  # noqa: BLE001 - the panel is informational only
+            pass
 
     def _auto_open(self) -> None:
         if self.auto_open_enabled:
@@ -469,6 +827,8 @@ class PhotoCullerWindow(QMainWindow):
         self.folder = folder
         name = folder.name if folder.name else str(folder)
         self.folder_label.setText(name)
+        self.folder_label.setToolTip(str(folder))
+        self.folder_count_label.setText("正在扫描…")
         self.setWindowTitle(f"{APP_NAME} — {name}")
         self.all_items = []
         self.index = 0
@@ -502,11 +862,22 @@ class PhotoCullerWindow(QMainWindow):
                     on_progress=on_progress,
                     should_cancel=should_cancel,
                 )
+                # Group here, off the UI thread. build_photo_groups resolves one
+                # directory per folder and Path.resolve() is a real filesystem
+                # call (~1 ms), so for a folder tree with many subdirectories it
+                # still costs ~1 s. The scanner has already walked every
+                # directory by now, so this is the natural place for it.
+                groups: list[PhotoGroup] | None = None
+                if not should_cancel():
+                    mtimes = {str(path): mtime for path, mtime in entries}
+                    groups = build_photo_groups(
+                        [path for path, _mtime in entries], mtimes
+                    )
                 self._scan_events.put(
-                    (generation, "done", entries, dirs_visited, errors, None)
+                    (generation, "done", entries, dirs_visited, errors, None, groups)
                 )
             except Exception as exc:  # pragma: no cover - scan crash guard
-                self._scan_events.put((generation, "done", [], 0, 0, exc))
+                self._scan_events.put((generation, "done", [], 0, 0, exc, None))
 
         Thread(target=work, name="photo-culler-scan", daemon=True).start()
 
@@ -554,17 +925,20 @@ class PhotoCullerWindow(QMainWindow):
         if terminal is None:
             return
 
-        generation, _kind, entries, dirs_visited, errors, error = terminal
+        generation, _kind, entries, dirs_visited, errors, error, groups = terminal
         self._scan_active = False
         folder = self._pending_scan_folder or self.folder
         if error is not None or folder is None:
             QMessageBox.critical(self, APP_NAME, f"无法读取这个文件夹：\n{error}")
             return
 
-        mtime_ns_by_path = {str(path): mtime_ns for path, mtime_ns in entries}
-        self.all_items = build_photo_groups(
-            [path for path, _mtime in entries], mtime_ns_by_path
-        )
+        if groups is None:
+            # Fallback: an older/cancelled scan that could not group up front.
+            mtime_ns_by_path = {str(path): mtime_ns for path, mtime_ns in entries}
+            groups = build_photo_groups(
+                [path for path, _mtime in entries], mtime_ns_by_path
+            )
+        self.all_items = groups
         self.index = 0
         self._invalidate_visible()
 
@@ -583,6 +957,7 @@ class PhotoCullerWindow(QMainWindow):
         if not self.all_items:
             self._update_keep_mode_ui()
             self._render_thumbnails()
+            self._update_folder_count()
             note = f"    · 异常 {errors}" if errors else ""
             self._set_status(
                 f"0 张照片 · 目录 {dirs_visited}{note}    "
@@ -594,6 +969,7 @@ class PhotoCullerWindow(QMainWindow):
             return
         self._render_thumbnails(center=True)
         self._show_current(center=True)
+        self._update_folder_count()
         if errors:
             self._status_note = f"扫描完成，{errors} 项读取异常"
         else:
@@ -622,6 +998,7 @@ class PhotoCullerWindow(QMainWindow):
         self._invalidate_visible()
         self._save_selection()
         self._refresh_item_icons({key})
+        self._update_folder_count()
         if self.show_kept_only:
             self._ensure_index()
             if not self.visible_items:
@@ -712,6 +1089,7 @@ class PhotoCullerWindow(QMainWindow):
             self._set_status("保留 0 张照片")
             self._update_keep_mode_ui()
             self._render_thumbnails()
+        self._update_folder_count()
 
     # --- current photo / preview -------------------------------------------
 
@@ -1100,6 +1478,11 @@ class PhotoCullerWindow(QMainWindow):
             for position, item in enumerate(items):
                 entry = QListWidgetItem()
                 entry.setData(Qt.ItemDataRole.UserRole, position)
+                # An explicit size hint is what keeps the slot from collapsing.
+                # An item with no icon yet (thumbnail still decoding) otherwise
+                # reports an empty hint and paints as a 1-px sliver — the whole
+                # strip looks like a row of ticks until decodes finish.
+                entry.setSizeHint(QSize(THUMB_SLOT, THUMB_PIX_HEIGHT))
                 pixmap = self._compose_thumb(item)
                 if pixmap is not None:
                     entry.setIcon(QIcon(pixmap))
@@ -1381,6 +1764,7 @@ class PhotoCullerWindow(QMainWindow):
             self.all_items = [c for c in self.all_items if c.key != item.key]
             self._invalidate_visible()
             self._save_selection()
+            self._update_folder_count()
             self._render_thumbnails(center=True)
             return None
 
@@ -1394,6 +1778,7 @@ class PhotoCullerWindow(QMainWindow):
         self.all_items = new_items
         self._invalidate_visible()
         self._save_selection()
+        self._update_folder_count()
         self._render_thumbnails(center=True)
         return rebuilt[0] if len(rebuilt) == 1 else None
 
@@ -1411,6 +1796,26 @@ class PhotoCullerWindow(QMainWindow):
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
+
+    def _update_folder_count(self) -> None:
+        """Refresh the right sidebar's photo counter.
+
+        Prefers the visible (filtered) count while "只看保留" is on, since that
+        is the set the filmstrip and arrow keys actually walk.
+        """
+        total = len(self.all_items)
+        if total == 0:
+            self.folder_count_label.setText("没有照片")
+            return
+        paired = sum(1 for item in self.all_items if item.paired_raw_jpeg)
+        kept = len(self.kept)
+        parts = [f"{total} 张照片"]
+        if paired:
+            parts.append(f"RAW+JPG 组 {paired}")
+        parts.append(f"已保留 {kept}")
+        if self.show_kept_only:
+            parts.append(f"当前显示 {len(self.visible_items)}")
+        self.folder_count_label.setText("\n".join(parts))
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._scan_cancel = True

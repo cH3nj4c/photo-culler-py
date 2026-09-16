@@ -58,11 +58,59 @@ Windows also needs the libjpeg-turbo native library (`turbojpeg` / `jpeg62` DLL)
 
 > Note: under the GPU shell the preview/zoom path no longer goes through `preview_engine`, so the DirectML/CuPy resample switch (`PHOTOCULLER_RESAMPLE`) only affects the Tkinter shell.
 
+### GPU acceleration schemes
+
+The app detects the machine's display adapters (integrated / discrete) and offers a few selectable acceleration schemes. Reach them at **加速 → GPU 加速…** in the left sidebar, or from the "更多…" menu; the right sidebar's 加速 section always shows the detected GPUs and the active scheme.
+
+Detection merges three sources, because no single one is complete:
+
+| Source | What it contributes |
+|---|---|
+| Registry `HKLM\SYSTEM\...\Class\{4d36e968-...}` | Every **installed** display adapter (including an iGPU the session is not using), driver version, real VRAM |
+| DXGI (`dxgi.dll` → `EnumAdapters1`) | Adapters the graphics stack can actually hand out, plus `DXGI_ADAPTER_FLAG_SOFTWARE` |
+| The live OpenGL context | The renderer the preview is actually using |
+
+On a hybrid laptop the registry and DXGI disagree usefully: the registry lists both the iGPU and the dGPU, while DXGI lists only the one attached to the current session. Reading DXGI alone would answer "is there an integrated GPU?" incorrectly, so both are used.
+
+Available schemes:
+
+| Scheme | Mechanism | Takes effect |
+|---|---|---|
+| **Auto (recommended)** | Clears this app's GPU preference, handing the choice back to Windows | Next launch |
+| **Prefer discrete (fastest)** | Writes "High performance" (`GpuPreference=2`) as this app's Windows GPU preference | Next launch |
+| **Prefer integrated (battery)** | Writes "Power saving" (`GpuPreference=1`) | Next launch |
+| **Compatibility (CPU only)** | Switches to the Tkinter shell and disables GPU resampling — no OpenGL at all | Next launch |
+
+When the matching hardware is absent the scheme is still listed but **not selectable**, annotated with the reason (e.g. "no discrete GPU detected"), so an option never appears to work while doing nothing.
+
+The preference is written to `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` (Microsoft's documented per-app GPU preference) — **current user only, fully reversible**: choosing "Auto" deletes the value. It is **not** written during a source run, because the process is then the shared `python.exe` and the preference would re-route every Python program on the machine; in the packaged build it applies directly.
+
+> Two options were investigated and deliberately **not** offered:
+> - **ANGLE / Direct3D backend**: Qt 6 removed ANGLE from its official builds and the PySide6 wheel has no `libEGL.dll` / `libGLESv2.dll`, so `QT_OPENGL=angle` would silently do nothing.
+> - **`QT_OPENGL=software`** (Qt's bundled software OpenGL): `opengl32sw.dll` is Mesa 11.2 / GLSL **1.30**, far below what VisPy's scene shaders need. Measured here, the Qt shell fails to obtain a context at all under it (`stage.gpu_info` comes back empty), so it would break the preview rather than rescue it. The real CPU path is the Tkinter shell.
+
+Settings live in `%LOCALAPPDATA%\PhotoCuller\settings.json`, kept separate from the per-folder selection records.
+
 ## Usage
 
-```bash
-python app.py
+Run from source (recommended — picks an interpreter that has the dependencies):
+
+```bat
+run.bat
 ```
+
+Or name the interpreter yourself (it **must** be the one with the dependencies):
+
+```bash
+.venv-build\Scripts\python.exe app.py     # the repo's own venv
+```
+
+> ⚠️ A bare `python app.py` (for example double-clicking `app.py`) uses the
+> system Python, which normally has neither `numpy` nor `PySide6`. Both shells
+> then fail and all you get is a startup error dialog. Nothing is broken — it is
+> the wrong interpreter. Use `run.bat` to avoid this.
+
+Force a shell with `set PHOTOCULLER_UI=qt` / `set PHOTOCULLER_UI=tk`.
 
 A folder picker opens on start. Press `O` to choose another folder.
 
@@ -100,6 +148,9 @@ PhotoCuller-source/
 ├── imaging.py             # Image decode (JPG/PNG/TIFF/DNG)
 ├── winshell.py            # HiDPI + Recycle Bin
 ├── selection_store.py     # Selection persistence (%LOCALAPPDATA%)
+├── app_settings.py        # User settings (%LOCALAPPDATA%\PhotoCuller\settings.json)
+├── gpu_info.py            # GPU detection (registry + DXGI + live GL; iGPU/dGPU classification)
+├── gpu_accel.py           # Selectable schemes (environment + Windows per-app GPU preference)
 ├── jpeg_preloader.py      # JPEG preview LRU + sliding-window preload
 ├── image_loader.py        # Background decode (preview / full-res)
 ├── export_service.py      # Background export (progress / Esc cancel)
@@ -116,9 +167,14 @@ PhotoCuller-source/
 ├── resample_backend.py    # Tk resample backends (CPU / DirectML / CUDA)
 ├── requirements.txt
 ├── test_gpu_ui.py         # GPU shell end-to-end smoke test
+├── test_gpu_accel.py      # GPU detection / scheme tests (classification, merge, settings, registry)
 ├── test_entry_dispatch.py # Entry dispatch / fallback behaviour
 ├── test_smoke.py          # Tk shell smoke test
 ├── test_delete.py         # Delete tests
+├── run.bat                # Launch from source (picks a usable interpreter)
+├── build_exe.bat          # Build the onedir bundle (dist\PhotoCuller)
+├── build_installer.bat    # Build the one-file installer
+├── bench_zoom.py          # Zoom smoothness benchmark (frame pacing / jank / cost breakdown)
 └── Photo Culler-实现说明.md
 ```
 
@@ -128,7 +184,8 @@ PhotoCuller-source/
 - **UI dispatch**: `app.py` picks `qt_ui` (default) or `ui` from `PHOTOCULLER_UI`, degrading to whichever side is actually available
 - **GPU preview**: `gpu_preview.py` uploads the preview as an OpenGL texture; scene coordinates are always **original pixels**. `ZoomPlan` owns the pure zoom-clamping math and `SmoothPanZoomCamera` implements cursor-anchored eased wheel zoom. The GPU context is initialised only after the window is first shown
 - **Zoom semantics**: `pixel_zoom()` is display pixels per original pixel (`1.0` = 100%); fit never upscales small photos; the cap is `ZOOM_MAX_PIXEL_SCALE` (4×)
-- **100% inspect**: past “fit + 8%” the full-resolution pixels load on demand and replace the texture; because scene coordinates are unchanged the view stays put. Returning to fit releases the full copy
+- **100% inspect**: the full-resolution pixels load on demand only once the preview texture is *actually magnified* past 1:1 (`pixel_zoom` beyond the preview's 1:1 scale ×1.02) and replace the texture; because scene coordinates are unchanged the view stays put. The whole upgrade (request → decode → texture swap) waits until the wheel goes quiet, so the swap never interrupts a gesture. Returning to fit releases the full copy
+- **Zoom smoothness**: on a 24MP photo the worst frame interval during a zoom gesture is ≤20ms with zero dropped frames (`bench_zoom.py` reproduces this)
 - **JPEG cache**: preview-sized only (long edge ≤ 2560); slot count adapts to free RAM (~6–60)
 - **Export**: background copy, status-bar progress, `Esc` to cancel
 - **Thumbnails**: visible range only; JPEG uses Pillow `draft()`; decoded off the UI thread; cache key is path id + scan-time mtime
@@ -141,11 +198,14 @@ Chinese implementation notes: [Photo Culler-实现说明.md](Photo%20Culler-%E5%
 ## Tests
 
 ```bash
-python app.py --self-test        # runtime self-check
-python test_gpu_ui.py            # GPU shell end to end (scan/nav/GPU zoom/full-res/filter/delete/export)
+python app.py --self-test        # runtime self-check: real Tk root + GPU deps + live adapter detection
+python test_gpu_ui.py            # GPU shell end to end (scan/nav/GPU zoom/full-res/filter/delete/export/layout/accel menu)
+python test_gpu_accel.py         # GPU detection + schemes (classification, source merge, settings, reversible registry)
 python test_entry_dispatch.py    # entry dispatch and fallback messages
 python test_smoke.py             # Tk shell: preview / nav / zoom / keep / filter
 python test_delete.py            # Recycle Bin / single / pair delete
 ```
 
 `test_gpu_ui.py` builds its window with `WA_DontShowOnScreen`, so it gets a real OpenGL context without appearing on the desktop; its delete step does hit the real Recycle Bin.
+
+> `build_exe.bat`, `build_installer.bat` and `run.bat` **must keep CRLF line endings**: they contain nested `for` / `if` blocks, and LF-only files get mis-parsed by cmd. Re-check the endings after editing, and **do not edit these scripts while a build is running** — cmd reads them as it executes, which makes PyInstaller run twice.

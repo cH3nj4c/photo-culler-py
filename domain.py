@@ -86,6 +86,24 @@ def build_photo_groups(
     def mtime_of(path: Path) -> int:
         return mtimes.get(str(path), 0)
 
+    # ``Path.resolve()`` is a real filesystem call on Windows (~1 ms per file
+    # here), and this runs for every photo in the folder. Calling it per photo
+    # made opening a 3000-file folder freeze the UI for ~2 s. Resolving the
+    # *directory* once and appending the file name produces the same string for
+    # regular files, so resolve one directory per unique parent instead.
+    resolved_dirs: dict[Path, str] = {}
+
+    def resolved_dir(path: Path) -> str:
+        parent = path.parent
+        base = resolved_dirs.get(parent)
+        if base is None:
+            base = str(parent.resolve())
+            resolved_dirs[parent] = base
+        return base
+
+    def resolved_id(path: Path) -> str:
+        return str(Path(resolved_dir(path)) / path.name)
+
     by_stem: dict[str, list[Path]] = {}
     for path in paths:
         by_stem.setdefault(path.stem.casefold(), []).append(path)
@@ -98,8 +116,8 @@ def build_photo_groups(
         paired_members = tuple(raws + jpegs)
         if raws and jpegs:
             primary = jpegs[0]
-            primary_id = str(primary.resolve())
-            key = "pair|" + str(primary.parent.resolve()).casefold() + "|" + primary.stem.casefold()
+            primary_id = resolved_id(primary)
+            key = "pair|" + resolved_dir(primary).casefold() + "|" + primary.stem.casefold()
             result.append(
                 PhotoGroup(
                     key=key,
@@ -112,16 +130,22 @@ def build_photo_groups(
             paired_paths = set(paired_members)
             for path in ordered:
                 if path not in paired_paths:
-                    result.append(_single_group(path, mtime_of(path)))
+                    result.append(
+                        _single_group(path, mtime_of(path), resolved_id(path))
+                    )
         else:
             for path in ordered:
-                result.append(_single_group(path, mtime_of(path)))
+                result.append(_single_group(path, mtime_of(path), resolved_id(path)))
 
     return sorted(result, key=lambda item: item.primary.name.casefold())
 
 
-def _single_group(path: Path, mtime_ns: int = 0) -> PhotoGroup:
-    resolved = str(path.resolve())
+def _single_group(
+    path: Path, mtime_ns: int = 0, path_id: str | None = None
+) -> PhotoGroup:
+    # ``path_id`` lets build_photo_groups share one resolve() per directory;
+    # falling back to resolve() here keeps this usable on its own.
+    resolved = path_id if path_id is not None else str(path.resolve())
     return PhotoGroup(
         key=resolved,
         primary=path,
