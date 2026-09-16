@@ -101,7 +101,14 @@ for expected in ("Tkinter 界面可用", "GPU 界面依赖齐全"):
 # report is present without requiring specific hardware (a VM has none).
 assert "显示适配器：" in proc.stdout, proc.stdout
 assert "加速方案：" in proc.stdout, proc.stdout
-print("[6] --self-test verifies both shells with a real Tk root and exits 0")
+# ...and it must lead with the version, since a self-test report is normally
+# attached to a "which build is this?" question.
+import config  # noqa: E402
+
+first_line = proc.stdout.strip().splitlines()[0]
+assert config.APP_VERSION in first_line, (first_line, config.APP_VERSION)
+assert "安装包：" in proc.stdout, proc.stdout
+print("[6] --self-test leads with the version, verifies both shells, exits 0")
 
 # 7. hardware detection must survive independently of the shells, and must
 #    never raise — it is consulted from a menu click on the UI thread.

@@ -10,6 +10,9 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 import tkinter as tk
 
+from config import APP_NAME, APP_VERSION
+from version_info import INSTALLER_BASENAME
+
 
 def payload_root() -> Path:
     if getattr(sys, "frozen", False):
@@ -65,7 +68,7 @@ $s2.Save()
 class InstallerApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("安装 Photo Culler")
+        self.title(f"安装 {APP_NAME} {APP_VERSION}")
         self.resizable(False, False)
         self.configure(bg="#17191d")
         self.dest = default_install_dir()
@@ -75,12 +78,13 @@ class InstallerApp(tk.Tk):
         frame = ttk.Frame(self, padding=18)
         frame.pack(fill="both", expand=True)
 
-        ttk.Label(frame, text="Photo Culler 安装程序", font=("Segoe UI", 14, "bold")).pack(
-            anchor="w"
-        )
+        ttk.Label(
+            frame, text=f"{APP_NAME} 安装程序", font=("Segoe UI", 14, "bold")
+        ).pack(anchor="w")
         ttk.Label(
             frame,
-            text="将复制程序文件到本机，并创建快捷方式。\n源照片不会被修改。",
+            text=f"版本 {APP_VERSION}　·　安装包 {INSTALLER_BASENAME}.exe\n"
+            "将复制程序文件到本机，并创建快捷方式。\n源照片不会被修改。",
             font=("Segoe UI", 10),
         ).pack(anchor="w", pady=(8, 12))
 
@@ -135,8 +139,8 @@ class InstallerApp(tk.Tk):
             )
             self.status.configure(text="安装完成")
             messagebox.showinfo(
-                "Photo Culler",
-                f"安装完成。\n\n{exe}\n\n是否现在启动？",
+                f"{APP_NAME} {APP_VERSION}",
+                f"安装完成（{APP_NAME} {APP_VERSION}）。\n\n{exe}\n\n是否现在启动？",
             )
             os.startfile(exe)  # noqa: S606
             self.destroy()

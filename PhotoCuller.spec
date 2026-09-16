@@ -1,16 +1,33 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for Photo Culler (Windows onedir)."""
 
+import sys
 from pathlib import Path
 
 block_cipher = None
 project = Path(SPECPATH)
 
+# Stamp the Windows version resource (属性 → 详细信息) from config.APP_VERSION.
+# Generated here rather than committed so the version has exactly one source of
+# truth and cannot drift from the installer's filename.
+sys.path.insert(0, str(project))
+import version_info  # noqa: E402
+
+version_file = version_info.ensure_version_file(
+    project / "build",
+    original_filename=version_info.APP_EXE_NAME,
+    file_description=f"{version_info.APP_NAME} 照片选片工具",
+)
+
 # Sibling modules imported dynamically / from app.py — keep explicit.
 hiddenimports = [
     "app",
     "config",
+    "version_info",
     "domain",
+    "gpu_info",
+    "gpu_accel",
+    "app_settings",
     "imaging",
     "winshell",
     "selection_store",
@@ -53,8 +70,6 @@ if _has_qt_ui:
     datas += collect_data_files("vispy")
 
 # Bundle Tcl/Tk script trees from the base interpreter (venv may not copy them).
-import sys
-
 base = Path(sys.base_prefix)
 tcl_root = base / "tcl"
 if tcl_root.is_dir():
@@ -105,6 +120,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(project / "assets" / "app.ico"),
+    version=version_file,
 )
 
 coll = COLLECT(

@@ -1,9 +1,14 @@
 ; Inno Setup script — Photo Culler installer
 ; Compile with:  ISCC.exe installer.iss
 ; Expects PyInstaller onedir output at dist\PhotoCuller\
+;
+; NOTE: this is the *optional* manual path. The automated build uses
+; build_installer.bat + Installer.spec, whose output name and version resource
+; both come from config.APP_VERSION. If you compile this file instead, keep
+; MyAppVersion below in sync — test_version.py asserts they match.
 
 #define MyAppName "Photo Culler"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "cH3nj4c"
 #define MyAppExeName "Photo Culler.exe"
 

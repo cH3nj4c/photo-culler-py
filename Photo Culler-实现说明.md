@@ -375,14 +375,29 @@ PER_MONITOR_AWARE_V2
 3. 仅 RAW、仅 JPG、RAW+JPG 导出成员选择测试。
 4. 保留状态与模式独立性的测试。
 5. 删除功能测试（`test_delete.py`）：回收站调用（单文件、多文件双 NUL 路径块、文件不存在）、单张照片删除后的缓存与选片状态清理、RAW+JPG 组整组删除。
-6. GPU 界面端到端测试（`test_gpu_ui.py`）：`ZoomPlan` 缩放钳制数学、扫描与分组、预览纹理上传、导航、保留标记、光标锚定滚轮缩放动画、按需全分辨率上传与释放、"只看保留"筛选、RAW+JPG 整组删除、导出。
+6. GPU 界面端到端测试（`test_gpu_ui.py`）：`ZoomPlan` 缩放钳制数学、扫描与分组、预览纹理上传、导航、保留标记、光标锚定滚轮缩放动画、按需全分辨率上传与释放、"只看保留"筛选、RAW+JPG 整组删除、导出、三栏布局与加速菜单。
 7. 入口分发测试（`test_entry_dispatch.py`）：`PHOTOCULLER_UI` 取值映射、缺少 tkinter 时 `import app` 仍可用且降级提示清晰。
 8. Tk 界面功能冒烟测试（`test_smoke.py`）。
-9. 打包后的 `.exe --self-test` 无窗口运行库自检，退出码为 0。
+9. 显卡检测与加速方案测试（`test_gpu_accel.py`）。
+10. 版本链路测试（`test_version.py`）。
+11. 打包后的 `.exe --self-test` 无窗口运行库自检，退出码为 0。
 
 `test_gpu_ui.py` 用 `WA_DontShowOnScreen` 创建隐形窗口，因此不占用桌面，但仍会拿到真实的 OpenGL 上下文（显卡信息在测试中会打印出来）。
 
 按照使用者要求，没有通过 Computer Use 自动操作用户桌面做视觉测试；因此实际照片文件夹中的显示效果仍应由用户在自己的显示器上进行最后确认。
+
+### 14.1 版本号（`config.APP_VERSION`）
+
+历史问题：项目原本**完全没有版本号** —— 代码里没有常量，两个 exe 也没有版本资源（Windows「属性 → 详细信息」是空的），`installer.iss` 里的 `1.0.0` 又没被 `build_installer.bat` 使用。结果是**重新打包后 app exe 从任何角度都看不出新旧**，只能靠手动给安装包改名区分，很容易得出"exe 还是旧版本"的结论。
+
+现在 `config.APP_VERSION` 是唯一来源，`version_info.py` 负责派生：
+
+- **exe 版本资源**：`version_info.build_version_info()` 用 PyInstaller 自己的 `VSVersionInfo`/`FileDescription` 等类构造，再以 `str()` 序列化写盘 —— 这正是 PyInstaller 加载器（它对该文件做 `eval()`）期望的形式，比手写结构体可靠。两个 `.spec` 在构建时现场生成到 `build/`。
+- **安装包命名**：`Installer.spec` 的 `name` 直接用 `INSTALLER_BASENAME`（`Photo-Culler-Setup<版本>`），不再需要手动改名。
+- **版本串解析**：`parse_version()` 只取前导数字段，`1.1.0-beta2 → (1,1,0,0)`；若按"取所有数字"实现会得到 `(1,1,2,0)`，把预发布后缀的数字混进版本号。
+- **界面**：窗口标题、右侧边栏底部 `v<版本>` 页脚（可点击）、「更多… → 关于 Photo Culler…」（含版本资源、渲染器、安装包名，并复制到剪贴板）、安装程序窗口、`--self-test` 首行。
+
+`test_version.py` 的关键一步是**从已构建的 exe 里把版本资源读回来**（pefile）并断言等于常量：静态检查源码证明不了产物是否正确，而"源码是 1.1.0、dist 里是旧构建"恰恰是最容易发生、也最难发现的情况。
 
 ## 15. 当前边界
 

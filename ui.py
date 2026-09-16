@@ -13,6 +13,7 @@ from PIL import Image, ImageTk
 
 from config import (
     APP_NAME,
+    APP_VERSION,
     PREVIEW_CACHE_LONG_EDGE,
     PREVIEW_INTERACTIVE_DELAY_MS,
     PREVIEW_POLL_MS,
@@ -62,7 +63,7 @@ class PhotoCuller(tk.Tk):
         # Critical order: process DPI awareness must be set before any Tk window.
         enable_windows_high_dpi()
         super().__init__()
-        self.title(APP_NAME)
+        self.title(f"{APP_NAME} {APP_VERSION}")
         apply_window_icon(self)
         self._configure_dpi_layout()
         self.configure(bg="#171A1F")

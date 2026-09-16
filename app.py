@@ -206,6 +206,21 @@ def _run_self_test() -> None:
     verdicts: list[str] = []
     failed = False
 
+    # Version first: a self-test report is mostly useful attached to a "which
+    # build is this?" question, so it has to lead.
+    try:
+        from config import APP_NAME, APP_VERSION
+        import version_info
+
+        verdicts.append(f"{APP_NAME} {APP_VERSION}")
+        verdicts.append(
+            "版本资源："
+            + ".".join(str(n) for n in version_info.parse_version())
+            + f"    安装包：{version_info.INSTALLER_BASENAME}.exe"
+        )
+    except Exception as exc:  # noqa: BLE001
+        verdicts.append(f"版本信息不可用：{type(exc).__name__}: {exc}")
+
     try:
         import tkinter as tk
 

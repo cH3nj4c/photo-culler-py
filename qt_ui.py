@@ -60,6 +60,7 @@ from vispy import app as vispy_app
 from app_icon import logo_candidates
 from config import (
     APP_NAME,
+    APP_VERSION,
     PREVIEW_CACHE_LONG_EDGE,
     THUMB_CACHE_LIMIT,
     THUMB_HEIGHT,
@@ -87,6 +88,7 @@ from selection_store import load_selection, save_selection
 from sysmem import describe_cache_plan, recommend_jpeg_cache_limit
 from temp_cleanup import cleanup_on_exit
 from thumbnail_service import ThumbnailService
+from version_info import about_text
 from winshell import send_to_recycle_bin
 
 THUMB_PIX_HEIGHT = 116  # 8px frame + 88px thumb + filename strip
@@ -136,6 +138,12 @@ QPushButton#danger { background: #3A2226; border: 1px solid #5A3038; color: #F3E
 QPushButton#danger:hover { background: #4C2C32; }
 QPushButton#danger:pressed { background: #ef9a9a; color: #1A0D0F; }
 QPushButton#toggle:checked { background: #4f9cff; color: #0E1014; border: none; font-weight: 600; }
+/* Version footer: reads as dim text, still behaves like a button. */
+QPushButton#link {
+    background: transparent; border: none; padding: 2px 0; text-align: left;
+    color: #6F7783; font-size: 9pt;
+}
+QPushButton#link:hover { color: #4f9cff; }
 QListWidget { background: #1C2027; border: none; outline: none; }
 QListWidget::item { border: 1px solid transparent; border-radius: 8px; padding: 1px; }
 QListWidget::item:selected { border: 1px solid #4f9cff; background: #15171B; }
@@ -212,7 +220,7 @@ class FilmStrip(QListWidget):
 class PhotoCullerWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         for path in logo_candidates():
             try:
                 self.setWindowIcon(QIcon(str(path)))
@@ -406,6 +414,18 @@ class PhotoCullerWindow(QMainWindow):
         self.accel_gpu_label.setWordWrap(True)
         sider.addWidget(self.accel_gpu_label)
 
+        # Version footer: answers "am I running the build I just installed?"
+        # at a glance, which is exactly what the filename alone could not.
+        # A flat button rather than a clickable QLabel — monkey-patching
+        # mousePressEvent onto a QLabel instance is fragile under PySide6's
+        # virtual dispatch, and a button gets hover/focus styling for free.
+        self.version_button = QPushButton(f"v{APP_VERSION}")
+        self.version_button.setObjectName("link")
+        self.version_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.version_button.setToolTip("查看版本、安装包名称与显卡详情")
+        self.version_button.clicked.connect(self._show_about)
+        sider.addWidget(self.version_button)
+
         sidebar_right.setFixedWidth(SIDEBAR_RIGHT_WIDTH)
 
         # --- right column: preview, hint bar, filmstrip ---
@@ -530,9 +550,30 @@ class PhotoCullerWindow(QMainWindow):
         menu.addAction("重置所有 RAW/JPG 模式", self.reset_all_pair_modes)
         menu.addSeparator()
         menu.addAction("GPU 加速…", self._show_accel_menu)
+        menu.addAction(f"关于 {APP_NAME}…", self._show_about)
         menu.addAction("快捷键说明", self._show_shortcuts)
         point = self.more_button.mapToGlobal(self.more_button.rect().bottomLeft())
         menu.exec(point)
+
+    def _show_about(self) -> None:
+        """Version + detected hardware, so a build can be identified on sight.
+
+        The text is also put on the clipboard, because "which version are you
+        running?" is normally answered by pasting it into a message. The dialog
+        says so rather than overwriting the clipboard silently.
+        """
+        info = self.stage.gpu_info or {}
+        text = about_text(renderer=str(info.get("renderer", "")))
+        if self.folder:
+            text += f"\n\n当前文件夹：{self.folder}"
+        text += f"\n照片数量：{len(self.all_items)}"
+        try:
+            QApplication.clipboard().setText(text)
+        except Exception:  # noqa: BLE001 - clipboard is a nicety, not the point
+            pass
+        else:
+            text += "\n\n（以上信息已复制到剪贴板）"
+        QMessageBox.information(self, f"关于 {APP_NAME}", text)
 
     # --- GPU acceleration --------------------------------------------------
 
@@ -829,7 +870,7 @@ class PhotoCullerWindow(QMainWindow):
         self.folder_label.setText(name)
         self.folder_label.setToolTip(str(folder))
         self.folder_count_label.setText("正在扫描…")
-        self.setWindowTitle(f"{APP_NAME} — {name}")
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — {name}")
         self.all_items = []
         self.index = 0
         self._invalidate_visible()

@@ -40,6 +40,7 @@ from vispy import app as vispy_app  # noqa: E402
 vispy_app.use_app("pyside6")
 
 import qt_ui  # noqa: E402
+import config  # noqa: E402
 from config import THUMB_SLOT  # noqa: E402
 import gpu_accel  # noqa: E402
 import gpu_info  # noqa: E402
@@ -432,6 +433,10 @@ sidebar = window.centralWidget().findChild(QWidget, "sidebar")
 assert sidebar is not None, "the sidebar widget is missing"
 assert sidebar.x() == 0, f"sidebar should hug the left edge, x={sidebar.x()}"
 assert sidebar.width() == qt_ui.SIDEBAR_WIDTH, sidebar.width()
+# Context lives in the mirrored right sidebar; resolved here because step 14
+# needs it to tell "action out of place" from "legitimate context control".
+right_side = window.centralWidget().findChild(QWidget, "sidebarRight")
+assert right_side is not None, "the right sidebar is missing"
 
 sidebar_buttons = sidebar.findChildren(QPushButton)
 assert len(sidebar_buttons) >= 9, [b.text() for b in sidebar_buttons]
@@ -441,11 +446,21 @@ for button in sidebar_buttons:
         f"{button.text()} is too narrow to read as a menu entry"
     )
 stranded = [
-    b.text()
+    (b.text(), b.objectName())
     for b in window.centralWidget().findChildren(QPushButton)
-    if not sidebar.isAncestorOf(b)
+    if not sidebar.isAncestorOf(b) and not right_side.isAncestorOf(b)
 ]
-assert not stranded, f"buttons left outside the sidebar: {stranded}"
+assert not stranded, f"buttons left outside both sidebars: {stranded}"
+# The right sidebar is context-only, so it may hold the version footer but no
+# action control — otherwise the two columns stop being "actions" vs "state".
+right_buttons = right_side.findChildren(QPushButton)
+assert [b.objectName() for b in right_buttons] == ["link"], [
+    (b.text(), b.objectName()) for b in right_buttons
+]
+assert window.version_button.objectName() == "link"
+assert config.APP_VERSION in window.version_button.text(), window.version_button.text()
+# ...and the app must show which build it is, which is the whole point.
+assert config.APP_VERSION in window.windowTitle(), window.windowTitle()
 
 # The preview column must start where the sidebar ends.
 for widget, label in ((window._stack, "preview"), (window.filmstrip, "filmstrip")):
@@ -463,8 +478,7 @@ print(f"[14] {len(sidebar_buttons)} actions are in a {sidebar.width()}px left si
 # --- 15. folder context lives in the right sidebar --------------------------
 # The folder name sits opposite the actions, in its own column pinned to the
 # right edge, so the left column stays a pure action menu.
-right_side = window.centralWidget().findChild(QWidget, "sidebarRight")
-assert right_side is not None, "the right sidebar is missing"
+# (`right_side` was resolved in step 14.)
 assert right_side.width() == qt_ui.SIDEBAR_RIGHT_WIDTH, right_side.width()
 
 central_w = window.centralWidget().width()
@@ -482,10 +496,13 @@ assert name_x >= preview_x + window._stack.width(), (
     f"folder name (x={name_x}) is not to the right of the preview column"
 )
 
-# No action may have drifted into the right sidebar.
-assert not right_side.findChildren(QPushButton), (
-    f"buttons leaked into the right sidebar: "
-    f"{[b.text() for b in right_side.findChildren(QPushButton)]}"
+# No *action* may have drifted into the right sidebar. The version footer is
+# the one deliberate control there and is asserted separately in step 14.
+action_buttons = [
+    b for b in right_side.findChildren(QPushButton) if b.objectName() != "link"
+]
+assert not action_buttons, (
+    f"action buttons leaked into the right sidebar: {[b.text() for b in action_buttons]}"
 )
 
 # The counter must be populated for the folder that is open, and follow the
