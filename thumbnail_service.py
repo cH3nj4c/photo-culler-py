@@ -74,8 +74,15 @@ class ThumbnailService:
                 thumb_size=thumbnail_decode_size(target_w, target_h),
             )
             image = fit_for_display(image, target_w, target_h)
-            if image.width < target_w and image.height < target_h:
-                background = Image.new("RGB", (target_w, target_h), "#1C2027")
+            if image.width != target_w or image.height != target_h:
+                # Pad rather than stretch. Note the condition: `fit_for_display`
+                # scales until the image *touches* one edge, so testing
+                # `width < target_w and height < target_h` would only ever be
+                # true for an image smaller than the whole box — every normal
+                # photo escaped padding and was then stretched by the consumer.
+                # The colour matches the thumbnail frame both shells draw, so a
+                # padded image shows no seam against it.
+                background = Image.new("RGB", (target_w, target_h), "#171A1F")
                 background.paste(
                     image,
                     ((target_w - image.width) // 2, (target_h - image.height) // 2),

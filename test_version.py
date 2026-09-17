@@ -154,7 +154,6 @@ else:
             f"(FileVersion={found.get('FileVersion')})"
         )
 
-<<<<<<< HEAD
         # A matching version is not enough: the exe can carry the right number
         # and still predate the source. Compare build time against the newest
         # *bundled* source file, which is the failure that actually happens
@@ -173,6 +172,4 @@ else:
         )
         print(f"[8b] exe is newer than every bundled source (newest: {newest[1]})")
 
-=======
->>>>>>> 4342b51a2e02c88cf7c2acadda0c3cc0e2eec3d9
 print("VERSION TEST PASSED")

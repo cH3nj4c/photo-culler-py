@@ -680,7 +680,89 @@ else:
     print(f"[17] resource panel: 内存 {ram_text}, 本程序 {app_text}, "
           f"GPU {gpu_text}, 显存 {vram_text}")
 
-# --- 18. clean shutdown ---
+# --- 18. thumbnails must not be squashed -------------------------------------
+# The filmstrip frame is 132x88 (3:2). `QPainter.drawImage(targetRect, image)`
+# stretches to fill, so handing it the full frame squashed every photo whose
+# aspect differed from 3:2 — 4:3, 16:9, square and portrait shots all came out
+# visibly distorted. These two checks pin the geometry down: one on the pure
+# helper, one on the pixels that actually get drawn.
+import types  # noqa: E402
+
+frame_w, frame_h = config.THUMB_WIDTH, config.THUMB_HEIGHT
+for src_w, src_h in ((600, 400), (400, 300), (640, 360), (400, 400), (300, 450), (900, 300)):
+    rect = qt_ui._fitted_rect(0.0, 0.0, float(frame_w), float(frame_h), src_w, src_h)
+    assert rect.width() <= frame_w + 0.01 and rect.height() <= frame_h + 0.01, rect
+    drawn = rect.width() / rect.height()
+    assert abs(drawn - src_w / src_h) < 0.02, f"{src_w}x{src_h} -> {drawn:.3f}"
+    # Touching one edge, centred on the other axis.
+    assert abs(rect.width() - frame_w) < 0.01 or abs(rect.height() - frame_h) < 0.01, rect
+# Degenerate inputs must not divide by zero.
+for bad in ((0, 100), (100, 0), (0, 0), (-3, 5)):
+    rect = qt_ui._fitted_rect(0.0, 0.0, float(frame_w), float(frame_h), *bad)
+    assert rect.width() == frame_w and rect.height() == frame_h, (bad, rect)
+    rect = qt_ui._fitted_rect(0.0, 0.0, 0.0, 0.0, 100, 100)
+    assert rect.width() == 0.0, rect
+
+# ...and the drawn pixels. A solid square photo must come out square: measure
+# the solid-colour run along the frame's centre row and centre column.
+thumb_dir = Path(tempfile.mkdtemp(prefix="pc-aspect-"))
+solid = (235, 60, 60)
+for name, (w, h) in {
+    "square": (400, 400),
+    "wide": (900, 300),
+    "tall": (300, 450),
+}.items():
+    src = thumb_dir / f"{name}.png"
+    Image.new("RGB", (w, h), solid).save(src)
+    key = (str(src), 0)
+    window.thumbnail_service.request(key, src, frame_w, frame_h)
+    wait_for(lambda k=key: k in window._thumb_pil, timeout=15, what=f"{name} thumbnail")
+    pil = window._thumb_pil[key]
+    # The service must hand over an exactly frame-sized image; anything else
+    # means a consumer is free to stretch it.
+    assert (pil.width, pil.height) == (frame_w, frame_h), (name, pil.size)
+
+    item = types.SimpleNamespace(
+        primary_id=key[0],
+        primary_mtime_ns=0,
+        key=f"aspect-{name}",
+        # _compose_thumb only reads .name off the path (the decode is already
+        # cached above, so it never calls request()).
+        primary=types.SimpleNamespace(name=f"{name}.png"),
+        paired_raw_jpeg=False,
+    )
+    pixmap = window._compose_thumb(item)
+    assert pixmap is not None, name
+    qimg = pixmap.toImage()
+    dpr = pixmap.devicePixelRatio() or 1.0
+
+    def is_photo(x: int, y: int) -> bool:
+        c = qimg.pixelColor(x, y)
+        return abs(c.red() - solid[0]) < 40 and c.green() < 140 and c.blue() < 140
+
+    # Centre of the frame, in device pixels.
+    cx = int((qt_ui.THUMB_SLOT / 2) * dpr)
+    cy = int((6 + frame_h / 2) * dpr)
+    assert is_photo(cx, cy), f"{name}: no photo pixel at the frame centre"
+    run_w = 1
+    while is_photo(cx - run_w, cy):
+        run_w += 1
+    while is_photo(cx + run_w, cy):
+        run_w += 1
+    run_h = 1
+    while is_photo(cx, cy - run_h):
+        run_h += 1
+    while is_photo(cx, cy + run_h):
+        run_h += 1
+    drawn_aspect = run_w / run_h
+    assert abs(drawn_aspect - w / h) < 0.08, (
+        f"{name}: drawn {run_w}x{run_h} px = aspect {drawn_aspect:.3f}, "
+        f"source is {w / h:.3f} — the thumbnail is squashed"
+    )
+    print(f"[18] {name:<7} {w}x{h} -> drawn {run_w}x{run_h}px "
+          f"(aspect {drawn_aspect:.3f} vs {w / h:.3f})")
+
+# --- 19. clean shutdown ---
 _restore_accel_settings()
 assert gpu_accel.current_scheme_id() == (
     json.loads(_accel_saved)["accel_scheme"] if _accel_saved else "auto"

@@ -27,10 +27,7 @@ hiddenimports = [
     "domain",
     "gpu_info",
     "gpu_accel",
-<<<<<<< HEAD
     "sysmon",
-=======
->>>>>>> 4342b51a2e02c88cf7c2acadda0c3cc0e2eec3d9
     "app_settings",
     "imaging",
     "winshell",

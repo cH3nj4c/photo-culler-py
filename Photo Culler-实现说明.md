@@ -403,12 +403,8 @@ PER_MONITOR_AWARE_V2
 8. Tk 界面功能冒烟测试（`test_smoke.py`）。
 9. 显卡检测与加速方案测试（`test_gpu_accel.py`）。
 10. 版本链路测试（`test_version.py`）。
-<<<<<<< HEAD
 11. 资源采样测试（`test_sysmon.py`）：格式化与百分比钳制的纯逻辑、缺失降级为「—」而非 0、LUID/pid 解析、本程序工作集、PDH 可用性与数值范围、采样线程的启停与幂等。
 12. 打包后的 `.exe --self-test` 无窗口运行库自检，退出码为 0。
-=======
-11. 打包后的 `.exe --self-test` 无窗口运行库自检，退出码为 0。
->>>>>>> 4342b51a2e02c88cf7c2acadda0c3cc0e2eec3d9
 
 `test_gpu_ui.py` 用 `WA_DontShowOnScreen` 创建隐形窗口，因此不占用桌面，但仍会拿到真实的 OpenGL 上下文（显卡信息在测试中会打印出来）。
 

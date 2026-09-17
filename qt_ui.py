@@ -159,6 +159,28 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 """
 
 
+def _fitted_rect(
+    x: float, y: float, box_w: float, box_h: float, src_w: int, src_h: int
+) -> QRectF:
+    """Centre ``src_w x src_h`` inside the box, preserving its aspect ratio.
+
+    A plain ``QRectF(x, y, box_w, box_h)`` stretches the source, so this returns
+    the largest aspect-correct rectangle that fits. Degenerate sizes fall back
+    to the box itself rather than dividing by zero.
+    """
+    if src_w <= 0 or src_h <= 0 or box_w <= 0 or box_h <= 0:
+        return QRectF(float(x), float(y), float(box_w), float(box_h))
+    scale = min(box_w / src_w, box_h / src_h)
+    draw_w = src_w * scale
+    draw_h = src_h * scale
+    return QRectF(
+        float(x + (box_w - draw_w) / 2.0),
+        float(y + (box_h - draw_h) / 2.0),
+        float(draw_w),
+        float(draw_h),
+    )
+
+
 def _pil_to_qimage(image: Image.Image) -> QImage:
     rgb = image if image.mode == "RGB" else image.convert("RGB")
     width, height = rgb.size
@@ -1629,6 +1651,9 @@ class PhotoCullerWindow(QMainWindow):
         painter = QPainter(pixmap)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            # Needed whenever the pixmap is scaled (devicePixelRatio > 1);
+            # without it the image resamples with a harsh nearest-neighbour.
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             x = (THUMB_SLOT - THUMB_WIDTH) / 2.0
             y = 6.0
             painter.setPen(QPen(QColor("#2A303A"), 1))
@@ -1637,8 +1662,17 @@ class PhotoCullerWindow(QMainWindow):
                 float(x - 4), float(y - 4), float(THUMB_WIDTH + 8), float(THUMB_HEIGHT + 8),
                 6.0, 6.0,
             )
+            # Draw through a fitted rect rather than the raw frame rect.
+            # `drawImage(targetRect, image)` stretches the source to fill the
+            # rectangle, which is how this used to squash every photo whose
+            # aspect ratio differed from the frame's: the thumbnail service
+            # returns an image scaled to *touch* one edge of the box (4:3, 16:9,
+            # square and portrait shots all came out stretched). The service now
+            # also letterboxes to the exact box size, so this is a 1:1 blit in
+            # practice — computing the rect anyway keeps the drawing correct no
+            # matter what size arrives.
             painter.drawImage(
-                QRectF(float(x), float(y), float(THUMB_WIDTH), float(THUMB_HEIGHT)).toRect(),
+                _fitted_rect(x, y, THUMB_WIDTH, THUMB_HEIGHT, pil.width, pil.height),
                 _pil_to_qimage(pil),
             )
             kept = item.key in self.kept

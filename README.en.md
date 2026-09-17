@@ -185,10 +185,7 @@ PhotoCuller-source/
 ├── requirements.txt
 ├── test_gpu_ui.py         # GPU shell end-to-end smoke test
 ├── test_version.py        # Version chain (reads the resource back from the built exe)
-<<<<<<< HEAD
 ├── test_sysmon.py         # Resource sampling (formatting, degradation, LUID parsing, thread)
-=======
->>>>>>> 4342b51a2e02c88cf7c2acadda0c3cc0e2eec3d9
 ├── test_gpu_accel.py      # GPU detection / scheme tests (classification, merge, settings, registry)
 ├── test_entry_dispatch.py # Entry dispatch / fallback behaviour
 ├── test_smoke.py          # Tk shell smoke test
@@ -243,14 +240,9 @@ Chinese implementation notes: [Photo Culler-实现说明.md](Photo%20Culler-%E5%
 ## Tests
 
 ```bash
-<<<<<<< HEAD
 python app.py --self-test        # runtime self-check: version first, real Tk root, GPU deps, live adapter + resource probe
 python test_version.py           # version chain: constant → resource → specs → actually stamped into the built exe
 python test_sysmon.py            # resource sampling: formatting, "—" degradation, LUID parsing, sampler lifecycle
-=======
-python app.py --self-test        # runtime self-check: version first, real Tk root, GPU deps, live adapter detection
-python test_version.py           # version chain: constant → resource → specs → actually stamped into the built exe
->>>>>>> 4342b51a2e02c88cf7c2acadda0c3cc0e2eec3d9
 python test_gpu_ui.py            # GPU shell end to end (scan/nav/GPU zoom/full-res/filter/delete/export/layout/accel menu)
 python test_gpu_accel.py         # GPU detection + schemes (classification, source merge, settings, reversible registry)
 python test_entry_dispatch.py    # entry dispatch and fallback messages
