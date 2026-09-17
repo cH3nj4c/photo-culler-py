@@ -257,6 +257,7 @@ build_installer.bat    :: 生成一键安装程序 dist\Photo-Culler-Setup<版�
 
 ```bash
 python app.py --self-test        # 运行时自检：首行报版本 + 真实建 Tk 根窗 + GPU 依赖 + 实跑显卡检测与资源采样
+python test_repo_hygiene.py      # 仓库卫生：无残留冲突标记、索引无未解决条目、所有 .py 可解析
 python test_version.py           # 版本链路：常量→版本资源→规格文件→已构建 exe 实际盖章
 python test_sysmon.py            # 资源采样：格式化、缺失降级为「—」、LUID 解析、采样线程启停
 python test_gpu_ui.py            # GPU 界面端到端（扫描/导航/GPU 缩放/全分辨率/筛选/删除/导出/布局/加速菜单）

@@ -241,6 +241,7 @@ Chinese implementation notes: [Photo Culler-实现说明.md](Photo%20Culler-%E5%
 
 ```bash
 python app.py --self-test        # runtime self-check: version first, real Tk root, GPU deps, live adapter + resource probe
+python test_repo_hygiene.py      # repo hygiene: no committed conflict markers, no unmerged index entries, every .py parses
 python test_version.py           # version chain: constant → resource → specs → actually stamped into the built exe
 python test_sysmon.py            # resource sampling: formatting, "—" degradation, LUID parsing, sampler lifecycle
 python test_gpu_ui.py            # GPU shell end to end (scan/nav/GPU zoom/full-res/filter/delete/export/layout/accel menu)
