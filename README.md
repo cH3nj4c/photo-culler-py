@@ -191,7 +191,10 @@ PhotoCuller-source/
 ├── build_installer.bat       # 打包单文件安装器
 ├── bench_zoom.py             # 缩放流畅度回归基准（帧间隔 / jank / 成本拆解）
 ├── test_gpu_ui.py            # GPU 界面端到端冒烟测试
+<<<<<<< HEAD
 ├── test_sysmon.py            # 资源采样测试（格式化、降级、LUID 解析、采样线程）
+=======
+>>>>>>> 4342b51a2e02c88cf7c2acadda0c3cc0e2eec3d9
 ├── test_version.py           # 版本链路测试（含从已构建 exe 读回版本资源）
 ├── test_gpu_accel.py         # 显卡检测 / 加速方案测试（分类、合并、持久化、注册表往返）
 ├── test_entry_dispatch.py    # 入口分发 / 降级行为测试
@@ -256,9 +259,14 @@ build_installer.bat    :: 生成一键安装程序 dist\Photo-Culler-Setup<版�
 ## 测试
 
 ```bash
+<<<<<<< HEAD
 python app.py --self-test        # 运行时自检：首行报版本 + 真实建 Tk 根窗 + GPU 依赖 + 实跑显卡检测与资源采样
 python test_version.py           # 版本链路：常量→版本资源→规格文件→已构建 exe 实际盖章
 python test_sysmon.py            # 资源采样：格式化、缺失降级为「—」、LUID 解析、采样线程启停
+=======
+python app.py --self-test        # 运行时自检：首行报版本 + 真实建 Tk 根窗 + 探测 GPU 依赖 + 实跑显卡检测
+python test_version.py           # 版本链路：常量→版本资源→规格文件→已构建 exe 实际盖章
+>>>>>>> 4342b51a2e02c88cf7c2acadda0c3cc0e2eec3d9
 python test_gpu_ui.py            # GPU 界面端到端（扫描/导航/GPU 缩放/全分辨率/筛选/删除/导出/布局/加速菜单）
 python test_gpu_accel.py         # 显卡检测与加速方案（分类规则、多源合并、设置往返、注册表可撤销）
 python test_entry_dispatch.py    # 入口分发与降级提示

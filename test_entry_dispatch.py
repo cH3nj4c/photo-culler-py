@@ -101,9 +101,12 @@ for expected in ("Tkinter 界面可用", "GPU 界面依赖齐全"):
 # report is present without requiring specific hardware (a VM has none).
 assert "显示适配器：" in proc.stdout, proc.stdout
 assert "加速方案：" in proc.stdout, proc.stdout
+<<<<<<< HEAD
 # Resource sampling is the other thing that can work from source and break
 # once frozen (ctypes + pdh.dll), so its availability is reported too.
 assert "资源采样：" in proc.stdout, proc.stdout
+=======
+>>>>>>> 4342b51a2e02c88cf7c2acadda0c3cc0e2eec3d9
 # ...and it must lead with the version, since a self-test report is normally
 # attached to a "which build is this?" question.
 import config  # noqa: E402
