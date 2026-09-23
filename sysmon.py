@@ -55,6 +55,12 @@ DEFAULT_INTERVAL_S = 1.0
 # at most fully busy, so the displayed figures are clamped.
 _MAX_PERCENT = 100.0
 
+# Failures to catch while reading a counter. ctypes.ArgumentError matters: it is
+# NOT an OSError/ValueError subclass, so a marshalling mistake (a missing
+# argtypes, say) would slip past the narrower handlers below and take the whole
+# sampler down instead of showing a dash.
+_SAMPLING_ERRORS = (OSError, ValueError, AttributeError, ctypes.ArgumentError)
+
 _PID_RE = re.compile(r"^pid_(\d+)_")
 # PDH instance names look like `pid_1234_luid_0x00000000_0x000114AD_phys_0_eng_0_engtype_3D`.
 # The LUID is split into high/low halves; DXGI reports the same value as one
@@ -85,6 +91,10 @@ class Snapshot:
     ram_total_mb: int = 0
     ram_used_mb: int = 0
     app_ram_mb: int = 0
+    # Machine-wide CPU load, and this process's share of it. Both need two
+    # samples separated in time, so they read None until the second one lands.
+    cpu_percent: float | None = None
+    app_cpu_percent: float | None = None
     gpu_percent: float | None = None
     app_gpu_percent: float | None = None
     vram_total_mb: int | None = None
@@ -336,6 +346,132 @@ class PdhGpuCounters:
         return total
 
 
+# --- CPU ---------------------------------------------------------------------
+
+def _ticks(value: wintypes.FILETIME) -> int:
+    """FILETIME as a single integer. Units are 100 ns."""
+    return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+
+
+# FILETIME counts 100-nanosecond intervals.
+_TICKS_PER_SECOND = 10_000_000
+
+
+def cpu_count() -> int:
+    try:
+        return max(1, os.cpu_count() or 1)
+    except (AttributeError, ValueError):
+        return 1
+
+
+class CpuSampler:
+    """CPU load from ``GetSystemTimes`` deltas.
+
+    Deliberately independent of PDH: these are plain kernel32 calls, so CPU
+    figures keep working on a machine whose GPU performance counters are
+    missing (a VM, a trimmed-down install) instead of going dark with them.
+
+    Load is a *rate*, so it cannot be read from a single call — the previous
+    counters are kept and the difference is taken. The first call therefore
+    returns ``(None, None)``.
+    """
+
+    def __init__(self) -> None:
+        self._previous: tuple[int, int, float] | None = None
+        self._previous_process: tuple[int, float] | None = None
+        self._cpu_count = cpu_count()
+
+    def sample(self) -> tuple[float | None, float | None]:
+        """Return (machine_percent, this_process_percent)."""
+        if sys.platform != "win32":
+            return None, None
+        try:
+            kernel32 = ctypes.WinDLL("kernel32")
+        except OSError:
+            return None, None
+        return self._sample_windows(kernel32)
+
+    def _sample_windows(self, kernel32) -> tuple[float | None, float | None]:
+        idle = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        kernel32.GetSystemTimes.restype = wintypes.BOOL
+        kernel32.GetSystemTimes.argtypes = [
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        if not kernel32.GetSystemTimes(
+            ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)
+        ):
+            return None, None
+
+        # `kernel` already includes the idle time, so busy = (kernel + user) - idle.
+        idle_ticks = _ticks(idle)
+        total_ticks = _ticks(kernel) + _ticks(user)
+        now = time.monotonic()
+
+        machine: float | None = None
+        previous = self._previous
+        if previous is not None:
+            last_idle, last_total, last_now = previous
+            total_delta = total_ticks - last_total
+            idle_delta = idle_ticks - last_idle
+            if total_delta > 0 and now > last_now:
+                busy = total_delta - idle_delta
+                machine = min(_MAX_PERCENT, max(0.0, busy * 100.0 / total_delta))
+        self._previous = (idle_ticks, total_ticks, now)
+
+        return machine, self._process_percent(kernel32, now)
+
+    def _process_percent(self, kernel32, now: float) -> float | None:
+        """This process's CPU as a share of the whole machine.
+
+        Normalised by the logical processor count so the number reads the same
+        way as the machine-wide one — 100% means every core busy, which matches
+        how Task Manager scales its per-process column.
+        """
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        try:
+            # restype/argtypes are mandatory here. GetCurrentProcess returns the
+            # pseudo-handle -1; without a HANDLE parameter type ctypes marshals
+            # the Python int as a 32-bit int and raises
+            # "OverflowError: int too long to convert".
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.GetProcessTimes.restype = wintypes.BOOL
+            kernel32.GetProcessTimes.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+            ]
+            handle = kernel32.GetCurrentProcess()
+            if not kernel32.GetProcessTimes(
+                handle, ctypes.byref(creation), ctypes.byref(exit_time),
+                ctypes.byref(kernel), ctypes.byref(user),
+            ):
+                return None
+        except _SAMPLING_ERRORS:
+            return None
+
+        used = _ticks(kernel) + _ticks(user)
+        previous = self._previous_process
+        self._previous_process = (used, now)
+        if previous is None:
+            return None
+        last_used, last_now = previous
+        wall = now - last_now
+        if wall <= 0:
+            return None
+        busy_seconds = max(0, used - last_used) / _TICKS_PER_SECOND
+        percent = busy_seconds * 100.0 / (wall * self._cpu_count)
+        return min(_MAX_PERCENT, max(0.0, percent))
+
+
 # --- display helpers ---------------------------------------------------------
 
 def format_mb(value: float | int | None) -> str:
@@ -373,12 +509,14 @@ def format_percent(value: float | None) -> str:
 
 
 def resource_rows(snapshot: Snapshot) -> tuple[tuple[str, str], ...]:
-    """The sidebar's four lines as (label, value) pairs.
+    """The sidebar's lines as (label, value) pairs.
 
-    Kept here rather than in the Qt layer so the wording and the rounding can be
-    tested without a window.
+    CPU first, then memory — the order Task Manager uses, and the order people
+    scan these in. Kept here rather than in the Qt layer so the wording and the
+    rounding can be tested without a window.
     """
     return (
+        ("CPU", format_percent(snapshot.cpu_percent)),
         ("内存", _format_usage(snapshot.ram_used_mb, snapshot.ram_total_mb, snapshot.ram_percent)),
         ("本程序", format_mb(snapshot.app_ram_mb)),
         ("GPU", format_percent(snapshot.gpu_percent)),
@@ -392,6 +530,14 @@ def resource_tooltip(
     """Detail that does not fit in the sidebar: per-adapter and per-process."""
     names = adapter_names or {}
     lines = ["实时资源占用", ""]
+    if snapshot.cpu_percent is None:
+        lines.append("CPU 使用率：首次采样中…")
+    else:
+        lines.append(
+            f"CPU 使用率：{snapshot.cpu_percent:.1f}%"
+            f"（{cpu_count()} 个逻辑处理器合计）"
+        )
+    lines.append(f"本程序 CPU：{format_percent(snapshot.app_cpu_percent)}（占整机比例）")
     lines.append(f"内存：{snapshot.ram_used_mb:,} / {snapshot.ram_total_mb:,} MB"
                  f"（{snapshot.ram_percent:.0f}%）")
     lines.append(f"本程序内存：{snapshot.app_ram_mb:,} MB（工作集）")
@@ -437,12 +583,25 @@ def _empty_snapshot(note: str = "") -> Snapshot:
     )
 
 
-def sample_once(counters: PdhGpuCounters | None, vram_total_mb: int | None) -> Snapshot:
+def sample_once(
+    counters: PdhGpuCounters | None,
+    vram_total_mb: int | None,
+    cpu: CpuSampler | None = None,
+) -> Snapshot:
     """Take a single reading. Never raises."""
     info = sysmem.get_memory_info()
     total_mb = int(info.total_mb)
     used_mb = int(info.total_mb - info.avail_mb)
     notes: list[str] = []
+
+    cpu_percent: float | None = None
+    app_cpu: float | None = None
+    # CPU needs no PDH, so it is sampled even when the GPU counters are missing.
+    if cpu is not None:
+        try:
+            cpu_percent, app_cpu = cpu.sample()
+        except _SAMPLING_ERRORS as exc:
+            notes.append(f"CPU 采样失败：{type(exc).__name__}: {exc}")
 
     gpu_percent: float | None = None
     app_gpu: float | None = None
@@ -457,7 +616,7 @@ def sample_once(counters: PdhGpuCounters | None, vram_total_mb: int | None) -> S
             app_gpu, _ = counters.gpu_percent(pid=pid)
             vram_used = counters.dedicated_bytes("adapter_mem") // 1048576
             app_vram = counters.dedicated_bytes("proc_mem", pid=pid) // 1048576
-        except (OSError, ValueError) as exc:
+        except _SAMPLING_ERRORS as exc:
             notes.append(f"GPU 采样失败：{type(exc).__name__}: {exc}")
             gpu_percent = app_gpu = None
             vram_used = app_vram = None
@@ -469,6 +628,8 @@ def sample_once(counters: PdhGpuCounters | None, vram_total_mb: int | None) -> S
         ram_total_mb=total_mb,
         ram_used_mb=used_mb,
         app_ram_mb=app_working_set_mb(),
+        cpu_percent=cpu_percent,
+        app_cpu_percent=app_cpu,
         gpu_percent=gpu_percent,
         app_gpu_percent=app_gpu,
         vram_total_mb=vram_total_mb,
@@ -529,22 +690,35 @@ class SystemMonitor:
 
     def _run(self) -> None:
         counters = PdhGpuCounters()
+        cpu = CpuSampler()
         try:
             counters.open()
             if counters.available:
                 # Prime the rate counters so the first published sample is real
                 # rather than a meaningless zero.
                 counters.collect()
+            # Same idea for CPU: its first call only records a baseline, so
+            # priming here means the first *published* reading already carries a
+            # real percentage instead of a dash.
+            cpu.sample()
+        except _SAMPLING_ERRORS:
+            pass
+
+        try:
             while not self._stop.is_set():
                 # Wait first: the counters need ~1s between collections, and
                 # waiting up front means the process spends its first moment
                 # responsive instead of blocking on PDH.
                 if self._stop.wait(self.interval_s):
                     break
-                if counters.available:
-                    counters.collect()
-                self._publish(sample_once(counters, self.vram_total_mb))
-        except Exception:  # noqa: BLE001 - a monitor must never kill the app
-            pass
+                # Per-iteration guard, not one around the loop: a single bad
+                # reading should cost that one tick, not stop sampling for the
+                # rest of the session.
+                try:
+                    if counters.available:
+                        counters.collect()
+                    self._publish(sample_once(counters, self.vram_total_mb, cpu))
+                except Exception:  # noqa: BLE001
+                    continue
         finally:
             counters.close()

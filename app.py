@@ -283,7 +283,8 @@ def _run_self_test() -> None:
     # Whether the GPU counters can be opened is exactly what decides between a
     # number and a "—" in the sidebar, so it belongs in a diagnostic report.
     # Only `open()` is called — a real reading would need a second collection a
-    # second later, and a self-test must not sit and wait.
+    # second later, and a self-test must not sit and wait. CPU comes from
+    # GetSystemTimes and needs no counters, so only its core count is reported.
     try:
         import sysmon
 
@@ -292,7 +293,10 @@ def _run_self_test() -> None:
         reason = counters.reason
         counters.close()
         state = "可用" if opened else f"不可用（{reason}）"
-        verdicts.append(f"资源采样：本程序 {sysmon.app_working_set_mb()} MB；GPU 计数器{state}")
+        verdicts.append(
+            f"资源采样：本程序 {sysmon.app_working_set_mb()} MB；"
+            f"CPU {sysmon.cpu_count()} 个逻辑处理器；GPU 计数器{state}"
+        )
     except Exception as exc:  # noqa: BLE001
         verdicts.append(f"资源采样不可用：{type(exc).__name__}: {exc}")
 

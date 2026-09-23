@@ -93,18 +93,19 @@ Settings live in `%LOCALAPPDATA%\PhotoCuller\settings.json`, kept separate from 
 
 ### Live resource usage
 
-The right sidebar's 资源 section shows four readings, refreshed about once a second:
+The right sidebar's 资源 section shows five readings, refreshed about once a second:
 
 | Reading | Source |
 |---|---|
+| CPU | Machine-wide CPU load (`GetSystemTimes`, no performance counters needed) |
 | 内存 | System physical memory in use (used / total + percentage) |
 | 本程序 | This process's working set (resident memory) |
 | GPU | Machine-wide GPU utilisation (all engines summed, capped at 100%) |
 | 显存 | Dedicated VRAM in use (used / total + percentage) |
 
-Hovering any row reveals per-adapter GPU utilisation plus this app's own GPU and VRAM usage. Adapters are matched by DXGI's LUID, so the tooltip names real cards rather than showing hex identifiers.
+Hovering any row reveals this app's CPU (as a share of the machine), per-adapter GPU utilisation, and this app's own GPU and VRAM usage. Adapters are matched by DXGI's LUID, so the tooltip names real cards rather than showing hex identifiers.
 
-Sampling runs on a **background thread** — PDH needs two collections about a second apart before it can produce a rate — and the UI only touches its labels when a new reading lands. On a machine without GPU performance counters (a VM, a trimmed-down install) the GPU and VRAM rows show "—" with the reason underneath: **"—" means "cannot measure", which is not the same as "0%"**.
+Sampling runs on a **background thread** — both GPU counters and CPU need two collections about a second apart before they can produce a rate — and the UI only touches its labels when a new reading lands. On a machine without GPU performance counters (a VM, a trimmed-down install) the GPU and VRAM rows show "—" with the reason underneath: **"—" means "cannot measure", which is not the same as "0%"**. CPU comes from `GetSystemTimes`, so it keeps working there.
 
 ## Usage
 

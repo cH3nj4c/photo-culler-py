@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+from ctypes import wintypes
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -64,22 +65,26 @@ print("[3] percentages clamp at 100 and missing denominators stay None")
 # --- 4. the sidebar rows -----------------------------------------------------
 live = sysmon.Snapshot(
     ram_total_mb=16159, ram_used_mb=11686, app_ram_mb=221,
+    cpu_percent=12.4, app_cpu_percent=1.8,
     gpu_percent=5.16, app_gpu_percent=0.0,
     vram_total_mb=6141, vram_used_mb=1179, app_vram_mb=21,
     adapters=((0x114AD, 5.16), (0x126C1, 0.0)),
 )
 rows = sysmon.resource_rows(live)
-assert [title for title, _ in rows] == ["内存", "本程序", "GPU", "显存"], rows
+# CPU leads, then memory, then the app's own footprint, then the GPU pair —
+# the order Task Manager uses.
+assert [title for title, _ in rows] == ["CPU", "内存", "本程序", "GPU", "显存"], rows
+assert dict(rows)["CPU"] == "12%", rows
 assert dict(rows)["内存"] == "11.4/15.8 GB 72%", rows
 assert dict(rows)["本程序"] == "221 MB", rows
 assert dict(rows)["GPU"] == "5%", rows
 assert dict(rows)["显存"] == "1.2/6.0 GB 19%", rows
-# A machine without the counters still yields all four rows, with em dashes.
+# A machine without the counters still yields every row, with em dashes.
 degraded = sysmon.Snapshot(ram_total_mb=16000, ram_used_mb=8000, app_ram_mb=20)
 brow = dict(sysmon.resource_rows(degraded))
-assert brow["GPU"] == "—" and brow["显存"] == "—", brow
+assert brow["CPU"] == "—" and brow["GPU"] == "—" and brow["显存"] == "—", brow
 assert brow["本程序"] == "20 MB" and brow["内存"].endswith("50%"), brow
-print("[4] four rows, correct labels, graceful em dashes when unavailable")
+print("[4] five rows in Task-Manager order, graceful em dashes when unavailable")
 
 # --- 5. tooltip resolves adapter names ---------------------------------------
 tip = sysmon.resource_tooltip(live, {0x114AD: "NVIDIA GeForce RTX 4050 Laptop GPU"})
@@ -179,5 +184,66 @@ assert "system_monitor.start()" in source, "the monitor is never started"
 assert "system_monitor.stop()" in source, "the monitor is never stopped"
 assert "self._update_resource_panel()" in source
 print("[10] the window owns, starts, polls and stops the monitor")
+
+# --- 11. CPU: helpers and the tooltip ----------------------------------------
+assert sysmon.cpu_count() >= 1, sysmon.cpu_count()
+# FILETIME halves recombine into one 100ns counter, high word most significant.
+ft = wintypes.FILETIME()
+ft.dwLowDateTime = 0x0000_0001
+ft.dwHighDateTime = 0x0000_0001
+assert sysmon._ticks(ft) == (1 << 32) | 1, hex(sysmon._ticks(ft))
+assert sysmon._TICKS_PER_SECOND == 10_000_000
+tip = sysmon.resource_tooltip(live, {0x114AD: "GPU"})
+assert "CPU 使用率：12.4%" in tip, tip
+assert "本程序 CPU" in tip, tip
+assert f"{sysmon.cpu_count()} 个逻辑处理器" in tip, tip
+# Before the first rate is available the tooltip must say so, not imply 0%.
+pending = sysmon.resource_tooltip(sysmon.Snapshot(ram_total_mb=1, ram_used_mb=1))
+assert "首次采样中" in pending, pending
+print(f"[11] CPU helpers OK; tooltip names {sysmon.cpu_count()} logical processors")
+
+# --- 12. CPU: the sampler really measures ------------------------------------
+# A rate needs two calls, so the first must report nothing rather than zero.
+sampler = sysmon.CpuSampler()
+assert sampler.sample() == (None, None), "the first call has no baseline to diff"
+time.sleep(0.6)
+machine, app = sampler.sample()
+if machine is None:
+    print("[12] CPU sampling unavailable on this host; degrade path exercised")
+else:
+    assert 0.0 <= machine <= 100.0, machine
+    assert app is None or 0.0 <= app <= 100.0, app
+    # Saturate one core and confirm the process figure actually moves. Asserting
+    # a range rather than a constant keeps this valid on any core count: one
+    # busy core is 100/ncpu percent of the machine.
+    expected = 100.0 / sysmon.cpu_count()
+    busy = sysmon.CpuSampler()
+    busy.sample()
+    end = time.perf_counter() + 1.2
+    while time.perf_counter() < end:
+        pass
+    _, busy_app = busy.sample()
+    assert busy_app is not None, "no per-process figure while a core was busy"
+    assert busy_app > expected * 0.4, (
+        f"one spinning core measured {busy_app:.1f}%, "
+        f"expected roughly {expected:.1f}% of {sysmon.cpu_count()} processors"
+    )
+    assert busy_app <= 100.0, busy_app
+    print(f"[12] CPU sampling works: idle machine={machine:.1f}%, "
+          f"one busy core of {sysmon.cpu_count()} -> app={busy_app:.1f}% "
+          f"(expected ~{expected:.1f}%)")
+
+# --- 13. CPU survives the GPU counters being absent --------------------------
+# GetSystemTimes is plain kernel32, so a machine without PDH must still report
+# CPU while its GPU rows go dark.
+cpu_only = sysmon.CpuSampler()
+cpu_only.sample()
+time.sleep(0.4)
+no_gpu = sysmon.sample_once(None, 6141, cpu_only)
+assert no_gpu.gpu_percent is None and no_gpu.vram_used_mb is None, no_gpu
+assert no_gpu.cpu_percent is not None, "CPU should not depend on PDH"
+assert dict(sysmon.resource_rows(no_gpu))["CPU"] != "—", no_gpu
+print(f"[13] without PDH: CPU={no_gpu.cpu_percent:.1f}% still reported, "
+      f"GPU/显存 correctly unavailable")
 
 print("SYSMON TEST PASSED")

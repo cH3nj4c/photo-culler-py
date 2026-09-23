@@ -92,14 +92,17 @@ Qt 侧边栏的高度依赖缩略图栏的滚动条尺寸，其高度由 `_fit_s
 
 ### 3.2 实时资源占用（`sysmon.py`）
 
-右栏「资源」分区显示四项，每项都取自能真正观测到它的最省来源：
+右栏「资源」分区显示五项，每项都取自能真正观测到它的最省来源：
 
 | 显示 | 来源 | 说明 |
 |---|---|---|
+| CPU | `GetSystemTimes` | 全机使用率。**不依赖 PDH**，所以没有性能计数器的机器上照样可用 |
 | 内存 | `GlobalMemoryStatusEx`（复用 `sysmem`） | 「已用」由 总量−可用 得出，与任务管理器口径接近 |
 | 本程序 | `GetProcessMemoryInfo` → `WorkingSetSize` | 常驻内存，对应任务管理器的「内存」列 |
 | GPU | PDH `\GPU Engine(*)\Utilization Percentage` | 实例形如 `pid_1234_luid_0x..._eng_0_engtype_3D`，全机求和得总占用，按 pid 过滤得本程序占用 |
 | 显存 | PDH `\GPU Adapter Memory(*)\Dedicated Usage` | 每个适配器一个实例；`\GPU Process Memory(*)\Dedicated Usage` 取本程序 |
+
+**CPU 口径**：`GetSystemTimes` 的返回值里 `kernel` **已含 idle**，所以 忙 = (kernel + user) − idle，使用率 = 忙增量 / 总增量。本程序 CPU 用 `GetProcessTimes` 取 user+kernel 增量，**再按逻辑处理器数归一化**（`100/ncpu` 表示占满一个核），与任务管理器一致 —— 本机实测：12 核里跑满一个核 → 8.1%，理论值 8.3%。
 
 **为什么用「专用显存」**：核显从系统内存划分显存，其专用量接近 0；只统计专用量才不会把共享内存重复计算。总容量取各硬件适配器的 `DedicatedVideoMemory` 之和（排除软件适配器），与「已用」的求和口径一致。
 
@@ -108,6 +111,8 @@ Qt 侧边栏的高度依赖缩略图栏的滚动条尺寸，其高度由 `_fit_s
 - **采样必须在后台守护线程**：PDH 需要相隔约 1 秒采集两次才能算出比率，放在 UI 线程会卡住绘制。`SystemMonitor` 对外只暴露不可变 `Snapshot`，UI 每 16ms 轮询但靠**时间戳比对**提前返回，只有真的产生了新读数才动标签。
 - **绝不抛异常**：这是侧边栏的装饰性读数，机器没有 PDH 计数器（虚拟机、精简系统）时降级为「—」，并在 `Snapshot.notes` 里给出原因 —— **「—」与「0%」对用户含义完全相反，不能混为一谈**。
 - **两个 ctypes 签名坑**（都实测踩过）：`GetCurrentProcess()` 返回伪句柄 -1，其 `restype` 必须是 `HANDLE`（指针宽度），用默认的 `c_int` 会被截断，`GetProcessMemoryInfo` 直接失败并返回 0；PDH 的 `PDH_STATUS` 是**有符号** `LONG`，`PDH_MORE_DATA` 为 `0x800007D2`，若不给函数声明 `restype = c_ulong`，ctypes 返回有符号 int，所有 `== PDH_MORE_DATA` 比较都会静默失败。
+- **第三个同类坑**：`GetProcessTimes` 缺 `argtypes` 时，`HANDLE` 会被当成 32 位 int 传递，抛 `OverflowError: int too long to convert`。`GetSystemTimes` 的 `FILETIME` 直接用 `wintypes.FILETIME`（已有现成定义，别自己再写一遍结构体）。
+- ⚠️ **`ctypes.ArgumentError` 不是 `OSError`/`ValueError` 的子类** —— 上面那个 overflow 就是它。原来的异常元组抓不住，会让采样直接崩掉。已统一成 `_SAMPLING_ERRORS`（含 `ctypes.ArgumentError`）。同时把采样循环的 `try` 从"包住整个 while"改成"包住单次迭代"：**一次读失败只损失一个采样点，不至于永久停掉采样**。
 
 **适配器名称解析**：PDH 的实例名里只有 LUID，直接显示是十六进制乱码。`gpu_info` 从 DXGI 的 `AdapterLuid` 取出同一数值（掩码到 64 位无符号，与 PDH 的两段十六进制对应），于是 tooltip 里能把百分比标成真实显卡名。**注意 `merge_sources`/`apply_vram_heuristic` 会逐字段重建 `Adapter`** —— 这类代码是字段被悄悄丢掉的经典位置，已改为 `dataclasses.replace()`，新增字段自动跟随。
 

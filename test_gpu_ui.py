@@ -636,7 +636,7 @@ print("[16e] compatibility scheme targets the CPU (Tk) shell, not software OpenG
 # background sampler, so the RAM rows must be filled from the very first paint
 # while the GPU rows may briefly read "—" until PDH has two samples to diff.
 titles = list(window.resource_value_labels)
-assert titles == ["内存", "本程序", "GPU", "显存"], titles
+assert titles == ["CPU", "内存", "本程序", "GPU", "显存"], titles
 for title, label in window.resource_value_labels.items():
     assert right_side.isAncestorOf(label), f"{title} left the right sidebar"
 assert right_side.isAncestorOf(window.resource_note_label)
@@ -652,9 +652,16 @@ assert re.match(r"^\d+\.\d+/\d+\.\d+ GB \d+%$", ram_text), ram_text
 app_text = window.resource_value_labels["本程序"].text()
 assert app_text.endswith("MB") and app_text != "0 MB", app_text
 
-# The GPU rows fill in once the sampler has published a real reading.
+# CPU needs no performance counters, so it must be populated on every host —
+# unlike the GPU rows, which legitimately stay "—" where PDH is missing.
 wait_for(
-    lambda: all(
+    lambda: (
+        window.resource_value_labels["CPU"].text() != "—"
+        # ...unless CPU sampling itself is unavailable, which only happens off
+        # Windows; the row then must still read "—" rather than a fake 0%.
+        or window.system_monitor.latest().cpu_percent is None
+    )
+    and all(
         window.resource_value_labels[k].text() != "—" for k in ("GPU", "显存")
     )
     or window.system_monitor.latest().gpu_percent is None,
@@ -664,21 +671,34 @@ wait_for(
 snapshot = window.system_monitor.latest()
 gpu_text = window.resource_value_labels["GPU"].text()
 vram_text = window.resource_value_labels["显存"].text()
+cpu_text = window.resource_value_labels["CPU"].text()
+if snapshot.cpu_percent is None:
+    assert cpu_text == "—", cpu_text
+else:
+    assert re.match(r"^\d+%$", cpu_text), cpu_text
+    assert abs(float(cpu_text.rstrip("%")) - snapshot.cpu_percent) < 1.5, (
+        cpu_text, snapshot.cpu_percent
+    )
 if snapshot.gpu_percent is None:
     # No PDH on this host: the panel must say so rather than claim 0%.
     assert gpu_text == "—" and vram_text == "—", (gpu_text, vram_text)
     assert window.resource_note_label.text(), "a missing measurement needs a reason"
     print(f"[17] resource panel filled; GPU counters unavailable here "
-          f"({window.resource_note_label.text()})")
+          f"({window.resource_note_label.text()}), CPU {cpu_text}")
 else:
     assert gpu_text.endswith("%"), gpu_text
-    assert re.match(r"^\d+\.\d+/\d+\.\d+ GB \d+%$", vram_text), vram_text
+    # Units may differ per side: _format_usage falls back to explicit units when
+    # the used figure is under 1 GB, giving e.g. "908 MB/6.0 GB 15%".
+    assert re.match(
+        r"^\d+(?:\.\d+)? (?:MB|GB)/\d+(?:\.\d+)? (?:MB|GB) \d+%$", vram_text
+    ), vram_text
     tip = window.resource_value_labels["GPU"].toolTip()
     assert "本程序 GPU" in tip, tip
+    assert "CPU 使用率" in tip, tip
     # The VRAM denominator must be the detected dedicated VRAM, not a guess.
     assert window.system_monitor.vram_total_mb == report.total_dedicated_vram_mb
-    print(f"[17] resource panel: 内存 {ram_text}, 本程序 {app_text}, "
-          f"GPU {gpu_text}, 显存 {vram_text}")
+    print(f"[17] resource panel: CPU {cpu_text}, 内存 {ram_text}, "
+          f"本程序 {app_text}, GPU {gpu_text}, 显存 {vram_text}")
 
 # --- 18. thumbnails must not be squashed -------------------------------------
 # The filmstrip frame is 132x88 (3:2). `QPainter.drawImage(targetRect, image)`
