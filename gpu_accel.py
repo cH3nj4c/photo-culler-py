@@ -34,8 +34,8 @@ import os
 import sys
 from dataclasses import dataclass
 
-import app_settings
 import gpu_info
+import render_mode_cache
 
 # Windows per-app GPU preference values (Microsoft's documented encoding).
 GPU_PREF_DEFAULT = 0
@@ -163,8 +163,14 @@ def scheme_availability(
 # --- persistence ------------------------------------------------------------
 
 def current_scheme_id() -> str:
-    """The scheme stored for the next launch."""
-    stored = app_settings.get_value("accel_scheme", DEFAULT_SCHEME)
+    """The scheme stored for the next launch.
+
+    Read through ``render_mode_cache``, which owns the on-disk choice and never
+    raises — a missing or damaged cache must degrade to the default, not stop
+    startup. An id this build does not know (a downgrade, say) degrades the
+    same way.
+    """
+    stored = render_mode_cache.load_mode(DEFAULT_SCHEME)
     return stored if stored in SCHEME_BY_ID else DEFAULT_SCHEME
 
 
@@ -184,9 +190,10 @@ def effective_scheme_id() -> str:
 
 
 def set_scheme_id(scheme_id: str) -> str | None:
+    """Store the choice for the next launch. Error message or None."""
     if scheme_id not in SCHEME_BY_ID:
         return f"未知的加速方案：{scheme_id}"
-    return app_settings.save_settings({"accel_scheme": scheme_id})
+    return render_mode_cache.save_mode(scheme_id)
 
 
 # --- environment ------------------------------------------------------------

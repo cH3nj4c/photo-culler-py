@@ -64,7 +64,7 @@ Qt 侧边栏的高度依赖缩略图栏的滚动条尺寸，其高度由 `_fit_s
 
 ### 3.1 GPU 检测与加速方案
 
-`gpu_info.py` 负责检测，`gpu_accel.py` 负责方案与生效机制，`app_settings.py` 负责持久化（`%LOCALAPPDATA%\PhotoCuller\settings.json`，与选片记录分开，避免一个损坏的文件同时损失两样东西）。
+`gpu_info.py` 负责检测，`gpu_accel.py` 负责方案与生效机制，`render_mode_cache.py` 负责渲染模式的跨次持久化（`%LOCALAPPDATA%\PhotoCuller\render_mode.json`，独立于 `settings.json`，每次选择写入、下次启动读回上次的选择），`app_settings.py` 负责其余设置（`%LOCALAPPDATA%\PhotoCuller\settings.json`，与选片记录分开，避免一个损坏的文件同时损失两样东西；其中 `accel_scheme` 是渲染模式的旧版本兼容副本，只在缓存文件不可用时才作为回退读取）。三者都属于用户数据，`temp_cleanup.py` 退出清理时一律跳过——否则选择会在退出时被删掉，下次启动退回默认值。
 
 **检测合并三个来源**，因为它们各自都不完整：
 
@@ -428,6 +428,7 @@ PER_MONITOR_AWARE_V2
 12. 领域逻辑测试（`test_domain.py`）：子文件夹树的 direct/total 计数、排序、中间层保留、根目录外路径被忽略、退化输入、深层链路不递归爆栈。**不需要界面，一秒内跑完。**
 13. 仓库卫生测试（`test_repo_hygiene.py`）：全仓库扫描残留的 git 冲突标记、索引中不得有未解决条目、所有 `.py` 均可解析。**起因是一次合并把未解决的冲突标记提交进了仓库**（详见 14.2）。
 14. 打包后的 `.exe --self-test` 无窗口运行库自检，退出码为 0。
+15. 渲染模式缓存测试（`test_render_mode_cache.py`）：保存/读取往返、重新加载模块（模拟下次启动）后仍是上次的选择、缓存或设置文件损坏时降级为默认而非报错、旧版本 `accel_scheme` 键的回退读取、退出清理保留渲染模式与设置（这是"下次启动保持上次渲染模式"曾经失效的根因）。
 
 `test_gpu_ui.py` 用 `WA_DontShowOnScreen` 创建隐形窗口，因此不占用桌面，但仍会拿到真实的 OpenGL 上下文（显卡信息在测试中会打印出来）。
 

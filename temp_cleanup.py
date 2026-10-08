@@ -1,8 +1,11 @@
 """Remove Photo Culler temp artifacts on exit.
 
-User data (selection JSON under %LOCALAPPDATA%\\PhotoCuller\\selections) is
-never touched. Only throwaway dirs/files under the system temp folder that
-match this app's prefixes are deleted.
+User data under %LOCALAPPDATA%\\PhotoCuller is never touched: the per-folder
+selection records, ``settings.json`` and the render-mode cache
+(``render_mode.json``) all have to outlive the session — deleting them here is
+exactly how a choice silently reverts to its default on the next launch. Only
+throwaway dirs/files under the system temp folder that match this app's
+prefixes, and scratch entries beside that user data, are deleted.
 """
 
 from __future__ import annotations
@@ -23,6 +26,14 @@ _TEMP_PREFIXES = (
     "pc_temp_",
     "pc_culler_",
 )
+
+# Entries under %LOCALAPPDATA%\PhotoCuller that are user data, not scratch.
+# Compared case-insensitively, like the rest of the names in this module.
+_USER_DATA_NAMES = frozenset({
+    "selections",
+    "settings.json",
+    "render_mode.json",
+})
 
 # Skip very fresh dirs so a concurrently running test isn't wiped mid-run.
 _MIN_AGE_SECONDS = 120.0
@@ -64,16 +75,24 @@ def cleanup_temp_files(max_age_seconds: float = _MIN_AGE_SECONDS) -> int:
     return removed
 
 
-def cleanup_app_data_scratch() -> int:
-    """Remove empty scratch under %LOCALAPPDATA%\\PhotoCuller except selections."""
+def app_data_root() -> Path:
     base = os.environ.get("LOCALAPPDATA")
     root = Path(base) if base else (Path.home() / "AppData" / "Local")
-    app_root = root / "PhotoCuller"
+    return root / "PhotoCuller"
+
+
+def cleanup_app_data_scratch(root: Path | None = None) -> int:
+    """Remove scratch beside the user data. Returns how many entries went.
+
+    ``root`` defaults to the real ``%LOCALAPPDATA%\\PhotoCuller``; tests pass a
+    sandbox so the assertion never runs against the user's own files.
+    """
+    app_root = app_data_root() if root is None else root
     if not app_root.is_dir():
         return 0
     removed = 0
     for child in app_root.iterdir():
-        if child.name.lower() == "selections":
+        if child.name.lower() in _USER_DATA_NAMES:
             continue
         try:
             if child.is_dir():

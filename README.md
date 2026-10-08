@@ -94,7 +94,7 @@ Windows 还需本机有 libjpeg-turbo 动态库（`turbojpeg` / `jpeg62`）。�
 > - **ANGLE / Direct3D 后端**：Qt 6 已从官方构建中移除 ANGLE，PySide6 wheel 里没有 `libEGL.dll` / `libGLESv2.dll`，`QT_OPENGL=angle` 只会静默地什么都不做。
 > - **`QT_OPENGL=software`（Qt 内软件 OpenGL）**：Qt 自带的 `opengl32sw.dll` 是 Mesa 11.2 / GLSL **1.30**，而 VisPy 的场景着色器需要远高于此。实测在该模式下 Qt 界面**拿不到上下文**（`stage.gpu_info` 为空），预览直接坏掉——它会是陷阱而不是退路。真正的 CPU 通路是 Tkinter 界面层。
 
-设置持久化在 `%LOCALAPPDATA%\PhotoCuller\settings.json`（与选片记录分开存放，互不影响）。
+设置持久化在 `%LOCALAPPDATA%\PhotoCuller\settings.json`（与选片记录分开存放，互不影响）。渲染模式本身另有独立缓存 `%LOCALAPPDATA%\PhotoCuller\render_mode.json`（`render_mode_cache.py`），每次选择都会写入，**下次启动读回上次的选择**；`settings.json` 里的 `accel_scheme` 作为旧版本兼容副本同步写入。退出时的临时清理不会碰这三样用户数据（选片记录 / 设置 / 渲染模式缓存）。
 
 ### 实时资源占用
 
@@ -179,6 +179,7 @@ PhotoCuller-source/
 ├── winshell.py               # HiDPI 与回收站删除
 ├── selection_store.py        # 选片记录持久化（%LOCALAPPDATA%）
 ├── app_settings.py           # 用户设置持久化（%LOCALAPPDATA%\PhotoCuller\settings.json）
+├── render_mode_cache.py      # 渲染模式缓存（%LOCALAPPDATA%\PhotoCuller\render_mode.json，下次启动沿用上次选择）
 ├── version_info.py           # 版本号 → exe 版本资源 + 安装包命名（唯一来源是 config.APP_VERSION）
 ├── gpu_info.py               # 显卡检测（注册表 + DXGI + 实时 GL，核显/独显分类）
 ├── gpu_accel.py              # 可选加速方案（环境变量 + Windows 按应用 GPU 偏好）
@@ -190,7 +191,7 @@ PhotoCuller-source/
 ├── workers.py                # latest-wins 单线程 worker
 ├── sysmem.py                 # 物理内存探测 + 自适应缓存上限
 ├── ram_frames.py             # 共享内存帧
-├── temp_cleanup.py           # 临时文件清理
+├── temp_cleanup.py           # 临时文件清理（保留选片记录 / 设置 / 渲染模式缓存）
 ├── gpu_preview.py            # GPU 预览引擎（VisPy/OpenGL 纹理 + ZoomPlan 缩放数学）
 ├── qt_ui.py                  # PySide6 界面层（默认）
 ├── ui.py                     # Tkinter 界面层（降级通路，保留完整功能）
@@ -207,6 +208,7 @@ PhotoCuller-source/
 ├── test_domain.py            # 领域逻辑测试（子文件夹树）
 ├── test_version.py           # 版本链路测试（含从已构建 exe 读回版本资源）
 ├── test_gpu_accel.py         # 显卡检测 / 加速方案测试（分类、合并、持久化、注册表往返）
+├── test_render_mode_cache.py # 渲染模式缓存测试（往返、损坏降级、旧键兼容、退出清理不删除）
 ├── test_entry_dispatch.py    # 入口分发 / 降级行为测试
 ├── test_smoke.py             # Tk 功能冒烟测试
 ├── test_delete.py            # 删除功能测试
@@ -276,6 +278,7 @@ python test_version.py           # 版本链路：常量→版本资源→规格
 python test_sysmon.py            # 资源采样：格式化、缺失降级为「—」、LUID 解析、采样线程启停
 python test_gpu_ui.py            # GPU 界面端到端（扫描/导航/GPU 缩放/全分辨率/筛选/删除/导出/布局/加速菜单）
 python test_gpu_accel.py         # 显卡检测与加速方案（分类规则、多源合并、设置往返、注册表可撤销）
+python test_render_mode_cache.py # 渲染模式缓存（重启后保持上次选择、损坏降级为默认、退出清理不删除）
 python test_entry_dispatch.py    # 入口分发与降级提示
 python test_smoke.py             # Tk 界面功能冒烟测试（预览/导航/缩放/保留/筛选）
 python test_delete.py            # 删除功能测试（回收站调用/单张删除/整组删除）

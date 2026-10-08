@@ -532,9 +532,12 @@ print(f"[15] folder name + counter ({count_text.splitlines()[0]}) live in a "
       f"{right_side.width()}px right sidebar at x={right_side.x()}")
 
 # --- 16. GPU acceleration menu + detected hardware --------------------------
-# Selecting a scheme writes the real settings file, so snapshot it first and
-# put it back at the end: a test run must never cost the user their choice.
+# Selecting a scheme writes the real settings file *and* the render-mode cache,
+# so snapshot both and put them back at the end: a test run must never cost the
+# user their choice (the last scheme tried here would otherwise become the one
+# their next launch starts with).
 import app_settings  # noqa: E402
+import render_mode_cache  # noqa: E402
 
 _accel_settings_path = app_settings.settings_file()
 _accel_saved = (
@@ -542,17 +545,30 @@ _accel_saved = (
     if _accel_settings_path.exists()
     else None
 )
+_accel_cache_path = render_mode_cache.cache_file()
+_accel_cache_saved = (
+    _accel_cache_path.read_text(encoding="utf-8")
+    if _accel_cache_path.exists()
+    else None
+)
+# What the stored scheme was when we started, so the end of the run can assert
+# it was put back exactly — the cache is authoritative, settings the fallback.
+_accel_before = gpu_accel.current_scheme_id()
 
 
 def _restore_accel_settings() -> None:
-    try:
-        if _accel_saved is None:
-            if _accel_settings_path.exists():
-                _accel_settings_path.unlink()
-        else:
-            _accel_settings_path.write_text(_accel_saved, encoding="utf-8")
-    except OSError:
-        pass
+    for path, saved in (
+        (_accel_settings_path, _accel_saved),
+        (_accel_cache_path, _accel_cache_saved),
+    ):
+        try:
+            if saved is None:
+                if path.exists():
+                    path.unlink()
+            else:
+                path.write_text(saved, encoding="utf-8")
+        except OSError:
+            pass
 
 
 # The schemes are offered from the left sidebar's 加速 group; the menu itself
@@ -900,12 +916,19 @@ print(f"[19] click navigates into landscape (10 photos) and 上一级 returns "
 
 # --- 20. clean shutdown ---
 _restore_accel_settings()
-assert gpu_accel.current_scheme_id() == (
-    json.loads(_accel_saved)["accel_scheme"] if _accel_saved else "auto"
-), "the test must leave the stored scheme as it found it"
+assert gpu_accel.current_scheme_id() == _accel_before, (
+    "the test must leave the stored scheme as it found it"
+)
 window.close()
 QAPP.processEvents()
 # Closing must tear the sampler down, or a daemon thread keeps touching PDH
 # while the rest of the app is already gone.
 assert window.system_monitor._thread is None, "sampler outlived the window"
+# And it must not take the user's render mode with it.
+assert _accel_cache_path.exists() == (_accel_cache_saved is not None), (
+    "closing the window deleted the render-mode cache"
+)
+assert _accel_settings_path.exists() == (_accel_saved is not None), (
+    "closing the window deleted the settings"
+)
 print("GPU UI SMOKE TEST PASSED")

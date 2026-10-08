@@ -19,23 +19,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import app_settings  # noqa: E402
 import gpu_accel  # noqa: E402
 import gpu_info  # noqa: E402
+import render_mode_cache  # noqa: E402
 
 # --- 0. preserve whatever the user already had -------------------------------
 # The test writes real settings; snapshot them so a run never costs the user
-# their chosen scheme.
+# their chosen scheme. The render-mode cache is written too (set_scheme_id
+# stores there now), so it is snapshotted alongside — otherwise the last scheme
+# this test picked would be the one the user's next launch started with.
 _settings_path = app_settings.settings_file()
 _saved_settings = _settings_path.read_text(encoding="utf-8") if _settings_path.exists() else None
+_cache_path = render_mode_cache.cache_file()
+_saved_cache = _cache_path.read_text(encoding="utf-8") if _cache_path.exists() else None
 
 
 def _restore_settings() -> None:
-    try:
-        if _saved_settings is None:
-            if _settings_path.exists():
-                _settings_path.unlink()
-        else:
-            _settings_path.write_text(_saved_settings, encoding="utf-8")
-    except OSError:
-        pass
+    for path, saved in ((_settings_path, _saved_settings), (_cache_path, _saved_cache)):
+        try:
+            if saved is None:
+                if path.exists():
+                    path.unlink()
+            else:
+                path.write_text(saved, encoding="utf-8")
+        except OSError:
+            pass
 
 
 # --- 1. classification (pure) ------------------------------------------------

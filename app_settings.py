@@ -22,7 +22,9 @@ SETTINGS_NAME = "settings.json"
 # Everything the app persists across runs. Unknown keys found on disk are
 # kept (a newer build may have written them) but never invented here.
 DEFAULTS: dict[str, Any] = {
-    # GPU acceleration scheme id; see gpu_accel.SCHEMES.
+    # Compatibility copy of the render mode: render_mode_cache owns
+    # render_mode.json and is what the app actually reads. This key stays so
+    # older builds, which only know settings.json, still see the user's choice.
     "accel_scheme": "auto",
 }
 

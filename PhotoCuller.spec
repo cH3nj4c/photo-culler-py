@@ -29,6 +29,7 @@ hiddenimports = [
     "gpu_accel",
     "sysmon",
     "app_settings",
+    "render_mode_cache",
     "imaging",
     "winshell",
     "selection_store",

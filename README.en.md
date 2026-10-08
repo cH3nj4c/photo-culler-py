@@ -89,7 +89,7 @@ The preference is written to `HKCU\Software\Microsoft\DirectX\UserGpuPreferences
 > - **ANGLE / Direct3D backend**: Qt 6 removed ANGLE from its official builds and the PySide6 wheel has no `libEGL.dll` / `libGLESv2.dll`, so `QT_OPENGL=angle` would silently do nothing.
 > - **`QT_OPENGL=software`** (Qt's bundled software OpenGL): `opengl32sw.dll` is Mesa 11.2 / GLSL **1.30**, far below what VisPy's scene shaders need. Measured here, the Qt shell fails to obtain a context at all under it (`stage.gpu_info` comes back empty), so it would break the preview rather than rescue it. The real CPU path is the Tkinter shell.
 
-Settings live in `%LOCALAPPDATA%\PhotoCuller\settings.json`, kept separate from the per-folder selection records.
+Settings live in `%LOCALAPPDATA%\PhotoCuller\settings.json`, kept separate from the per-folder selection records. The render mode has a cache of its own — `%LOCALAPPDATA%\PhotoCuller\render_mode.json` (`render_mode_cache.py`) — written on every choice so **the next launch starts with the mode you picked last time**; `settings.json`'s `accel_scheme` is kept in sync as a compatibility copy for older builds. The exit-time cleanup leaves all three alone (selections / settings / render-mode cache).
 
 ### Live resource usage
 
@@ -176,6 +176,7 @@ PhotoCuller-source/
 ├── winshell.py            # HiDPI + Recycle Bin
 ├── selection_store.py     # Selection persistence (%LOCALAPPDATA%)
 ├── app_settings.py        # User settings (%LOCALAPPDATA%\PhotoCuller\settings.json)
+├── render_mode_cache.py   # Render-mode cache (%LOCALAPPDATA%\PhotoCuller\render_mode.json — next launch keeps the last choice)
 ├── version_info.py        # Version → exe resource + installer name (source: config.APP_VERSION)
 ├── gpu_info.py            # GPU detection (registry + DXGI + live GL; iGPU/dGPU classification)
 ├── gpu_accel.py           # Selectable schemes (environment + Windows per-app GPU preference)
@@ -187,7 +188,7 @@ PhotoCuller-source/
 ├── workers.py             # Latest-wins single-thread worker
 ├── sysmem.py              # RAM probe + adaptive cache limit
 ├── ram_frames.py          # Shared-memory frames
-├── temp_cleanup.py        # Temp file cleanup
+├── temp_cleanup.py        # Temp file cleanup (keeps selections / settings / render-mode cache)
 ├── gpu_preview.py         # GPU preview engine (VisPy/OpenGL texture + ZoomPlan math)
 ├── qt_ui.py               # PySide6 presentation layer (default)
 ├── ui.py                  # Tkinter presentation layer (fallback, fully featured)
@@ -200,6 +201,7 @@ PhotoCuller-source/
 ├── test_sysmon.py         # Resource sampling (formatting, degradation, LUID parsing, thread)
 ├── test_domain.py         # Domain logic (subfolder tree)
 ├── test_gpu_accel.py      # GPU detection / scheme tests (classification, merge, settings, registry)
+├── test_render_mode_cache.py  # Render-mode cache (survives restart, corrupt degrades to default, cleanup keeps it)
 ├── test_entry_dispatch.py # Entry dispatch / fallback behaviour
 ├── test_smoke.py          # Tk shell smoke test
 ├── test_delete.py         # Delete tests
@@ -260,6 +262,7 @@ python test_version.py           # version chain: constant → resource → spec
 python test_sysmon.py            # resource sampling: formatting, "—" degradation, LUID parsing, sampler lifecycle
 python test_gpu_ui.py            # GPU shell end to end (scan/nav/GPU zoom/full-res/filter/delete/export/layout/accel menu)
 python test_gpu_accel.py         # GPU detection + schemes (classification, source merge, settings, reversible registry)
+python test_render_mode_cache.py # Render-mode cache (choice survives a restart, corruption degrades, cleanup keeps it)
 python test_entry_dispatch.py    # entry dispatch and fallback messages
 python test_smoke.py             # Tk shell: preview / nav / zoom / keep / filter
 python test_delete.py            # Recycle Bin / single / pair delete
