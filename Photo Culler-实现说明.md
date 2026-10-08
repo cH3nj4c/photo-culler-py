@@ -429,6 +429,7 @@ PER_MONITOR_AWARE_V2
 13. 仓库卫生测试（`test_repo_hygiene.py`）：全仓库扫描残留的 git 冲突标记、索引中不得有未解决条目、所有 `.py` 均可解析。**起因是一次合并把未解决的冲突标记提交进了仓库**（详见 14.2）。
 14. 打包后的 `.exe --self-test` 无窗口运行库自检，退出码为 0。
 15. 渲染模式缓存测试（`test_render_mode_cache.py`）：保存/读取往返、重新加载模块（模拟下次启动）后仍是上次的选择、缓存或设置文件损坏时降级为默认而非报错、旧版本 `accel_scheme` 键的回退读取、退出清理保留渲染模式与设置（这是"下次启动保持上次渲染模式"曾经失效的根因）。
+16. 安装器升级测试（`test_installer.py`）：注册表注册/读回、升级时同一键覆盖（应用和功能中只有一条）、旧版 `UninstallString` 先被静默执行、残留文件与快捷方式清理、安装位置取注册表记录值、以及用户数据在任何情况下都不被删除。测试全部使用 `Software\PhotoCullerTest\<随机>` 下的临时注册表根与临时目录，不会污染真实卸载列表。
 
 `test_gpu_ui.py` 用 `WA_DontShowOnScreen` 创建隐形窗口，因此不占用桌面，但仍会拿到真实的 OpenGL 上下文（显卡信息在测试中会打印出来）。
 
@@ -481,6 +482,16 @@ PER_MONITOR_AWARE_V2
 **恢复办法**（比让 PyInstaller 去收拾残留状态更可靠）：直接删掉 `dist\PhotoCuller` 与 `build\` 再重建 —— 两者都是可再生的构建产物，`dist\` 里的安装包不要删。
 
 **`[8c]` 为什么是跑 exe 而不是数文件**：数文件数量无法判断"少的是不是必需的"。实际跑一次 `Photo Culler.exe --self-test` 才是唯一真正验证 bundle 的手段 —— 它同时也覆盖了"打包后缺 Tk 运行库"这类问题（Tk 降级界面依赖 `bin\tk86t.dll`，缺了就是静默回退失败）。
+
+### 14.4 安装器的升级逻辑（`installer_app.py`）
+
+自动发布的安装包是 `build_installer.bat` 打出的单文件安装器，升级时按三步走：
+
+1. **检测**：读 `HKCU` / `HKLM` 的 `Software\Microsoft\Windows\CurrentVersion\Uninstall`，既查自己的键 `Photo Culler`，也查可选 Inno 路径写下的 `{8F3C2A91-…}_is1` —— 两条安装路径互认。
+2. **先移除旧版本**：若旧条目有 `UninstallString` 且目标仍在，先静默执行（Inno 的 `unins000.exe` 显式加 `/VERYSILENT`；自己的 `uninstall.ps1` 缺失则跳过），再删残留文件、桌面/开始菜单快捷方式与注册项。程序正在运行时会先提示退出。
+3. **原位置安装**：新版本默认装到注册表记录的 `InstallLocation`（对话框预填、可改），完成后在**同一个键**下重写注册信息（`DisplayVersion` 等），应用和功能里始终只有一条记录；控制面板卸载执行安装目录里生成的 `uninstall.ps1`。
+
+**用户数据的保护是硬约束**：选片记录 / `settings.json` / `render_mode.json` 在 `%LOCALAPPDATA%\PhotoCuller`，程序在 `%LOCALAPPDATA%\Programs\PhotoCuller`，本就是两处；即便有人把安装目录手改成用户数据目录或它的上级，`touches_user_data()` 也会让"移除旧版"跳过该目录、并让安装直接拒绝（否则 `copy_payload` 的先删后拷会把用户数据一起删掉）。
 
 ## 15. 当前边界
 

@@ -202,12 +202,14 @@ PhotoCuller-source/
 ├── test_domain.py         # Domain logic (subfolder tree)
 ├── test_gpu_accel.py      # GPU detection / scheme tests (classification, merge, settings, registry)
 ├── test_render_mode_cache.py  # Render-mode cache (survives restart, corrupt degrades to default, cleanup keeps it)
+├── test_installer.py      # Installer upgrade (registry detection, old version removed first, user data kept)
 ├── test_entry_dispatch.py # Entry dispatch / fallback behaviour
 ├── test_smoke.py          # Tk shell smoke test
 ├── test_delete.py         # Delete tests
 ├── run.bat                # Launch from source (picks a usable interpreter)
 ├── build_exe.bat          # Build the onedir bundle (dist\PhotoCuller)
 ├── build_installer.bat    # Build the one-file installer
+├── installer_app.py       # Installer (detect installed → remove old → reinstall at the recorded location, user data kept)
 ├── bench_zoom.py          # Zoom smoothness benchmark (frame pacing / jank / cost breakdown)
 └── Photo Culler-实现说明.md
 ```
@@ -252,6 +254,8 @@ Chinese implementation notes: [Photo Culler-实现说明.md](Photo%20Culler-%E5%
 
 > ⚠️ Older setups left in `dist\` (e.g. `Photo-Culler-Setup1.0.1.exe`) contain **none of the later fixes** — running one installs an old build. Use the file whose name carries the current version.
 
+**Upgrading** (running a newer setup exe): the installer first reads the app's entry under `…\CurrentVersion\Uninstall` (its own key *or* the one the optional Inno Setup build writes). If a version is installed it **removes it first** (runs its `UninstallString`, then clears leftovers, shortcuts and the registration), installs to **the location that registration recorded** (pre-filled, editable) and rewrites **the same registry key** with the new version — so 应用和功能 ever shows a single entry. User data (selections, `settings.json`, `render_mode.json` under `%LOCALAPPDATA%\PhotoCuller`) is never touched; an install location that *is*, contains, or is contained by that directory is refused outright. Uninstalling from the Control Panel runs `uninstall.ps1` in the install dir, which likewise deletes program files only.
+
 ## Tests
 
 ```bash
@@ -263,6 +267,7 @@ python test_sysmon.py            # resource sampling: formatting, "—" degradat
 python test_gpu_ui.py            # GPU shell end to end (scan/nav/GPU zoom/full-res/filter/delete/export/layout/accel menu)
 python test_gpu_accel.py         # GPU detection + schemes (classification, source merge, settings, reversible registry)
 python test_render_mode_cache.py # Render-mode cache (choice survives a restart, corruption degrades, cleanup keeps it)
+python test_installer.py      # Installer upgrade (registry detection, same-key overwrite, old version removed first, user data kept)
 python test_entry_dispatch.py    # entry dispatch and fallback messages
 python test_smoke.py             # Tk shell: preview / nav / zoom / keep / filter
 python test_delete.py            # Recycle Bin / single / pair delete

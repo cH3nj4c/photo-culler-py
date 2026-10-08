@@ -9,7 +9,7 @@ APP_NAME = "Photo Culler"
 # 关于 dialog, the right sidebar footer, `--self-test`, and the installer's
 # output filename (`Photo-Culler-Setup<version>.exe`). Nothing else should
 # hardcode a version — see `version_info.py`.
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 # Shown as the publisher in the exe's version resource.
 APP_PUBLISHER = "cH3nj4c"

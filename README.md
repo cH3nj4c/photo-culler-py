@@ -202,6 +202,7 @@ PhotoCuller-source/
 ├── run.bat                   # 从源码启动（自动挑一个装好依赖的解释器）
 ├── build_exe.bat             # 打包 onedir 版本（dist\PhotoCuller）
 ├── build_installer.bat       # 打包单文件安装器
+├── installer_app.py          # 安装程序（检测已装版本→先移除→原位置安装，保留用户数据）
 ├── bench_zoom.py             # 缩放流畅度回归基准（帧间隔 / jank / 成本拆解）
 ├── test_gpu_ui.py            # GPU 界面端到端冒烟测试
 ├── test_sysmon.py            # 资源采样测试（格式化、降级、LUID 解析、采样线程）
@@ -209,6 +210,7 @@ PhotoCuller-source/
 ├── test_version.py           # 版本链路测试（含从已构建 exe 读回版本资源）
 ├── test_gpu_accel.py         # 显卡检测 / 加速方案测试（分类、合并、持久化、注册表往返）
 ├── test_render_mode_cache.py # 渲染模式缓存测试（往返、损坏降级、旧键兼容、退出清理不删除）
+├── test_installer.py         # 安装器升级测试（注册表检测/原位置安装/旧版移除/用户数据保留）
 ├── test_entry_dispatch.py    # 入口分发 / 降级行为测试
 ├── test_smoke.py             # Tk 功能冒烟测试
 ├── test_delete.py            # 删除功能测试
@@ -266,6 +268,12 @@ build_installer.bat    :: 生成一键安装程序 dist\Photo-Culler-Setup<版�
 
 安装包会把程序装到 `%LOCALAPPDATA%\Programs\PhotoCuller`，并可创建桌面/开始菜单快捷方式。需要 Inno Setup 时也可用 `installer.iss` 自行编译。
 
+**升级（再次安装新版本 exe）**：安装程序会先读注册表 `…\CurrentVersion\Uninstall` 下本程序（以及旧 Inno 安装）的注册信息：
+
+1. 检测到已安装版本 → 提示并**先移除旧版本**（运行旧 `UninstallString`，再清掉残留文件、快捷方式与注册项）；
+2. 装到**注册表记录的原安装位置**（对话框中预填，可改），并在**同一个注册表键**下写入新版本的注册信息（应用和功能中始终只有一条）；
+3. 全程**不碰用户数据**：选片记录、`settings.json`、`render_mode.json` 位于 `%LOCALAPPDATA%\PhotoCuller`，与安装目录是两处；即使把安装目录手动改成用户数据目录或其上级，安装也会直接拒绝。控制面板卸载走安装目录里的 `uninstall.ps1`，同样只删程序文件。
+
 > ⚠️ `dist\` 里残留的旧安装包（例如 `Photo-Culler-Setup1.0.1.exe`）**不含后续修复**，双击它会装出旧版本。构建完请认准带当前版本号的那个文件。
 
 ## 测试
@@ -279,6 +287,7 @@ python test_sysmon.py            # 资源采样：格式化、缺失降级为「
 python test_gpu_ui.py            # GPU 界面端到端（扫描/导航/GPU 缩放/全分辨率/筛选/删除/导出/布局/加速菜单）
 python test_gpu_accel.py         # 显卡检测与加速方案（分类规则、多源合并、设置往返、注册表可撤销）
 python test_render_mode_cache.py # 渲染模式缓存（重启后保持上次选择、损坏降级为默认、退出清理不删除）
+python test_installer.py      # 安装器升级（注册表检测、同一键覆盖、旧版先移除、用户数据保留）
 python test_entry_dispatch.py    # 入口分发与降级提示
 python test_smoke.py             # Tk 界面功能冒烟测试（预览/导航/缩放/保留/筛选）
 python test_delete.py            # 删除功能测试（回收站调用/单张删除/整组删除）

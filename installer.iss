@@ -8,7 +8,7 @@
 ; MyAppVersion below in sync — test_version.py asserts they match.
 
 #define MyAppName "Photo Culler"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "cH3nj4c"
 #define MyAppExeName "Photo Culler.exe"
 
