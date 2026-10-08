@@ -13,6 +13,7 @@ Run:  python test_version.py
 """
 
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -171,5 +172,30 @@ else:
             f"exe was built. Re-run build_exe.bat."
         )
         print(f"[8b] exe is newer than every bundled source (newest: {newest[1]})")
+
+        # Version and timestamp both check out — but neither proves the bundle
+        # is *runnable*. A build killed midway through PyInstaller's
+        # "Removing dir dist\PhotoCuller" step (which is what a sandboxed
+        # file-deletion shim or an interrupted session does) leaves an onedir
+        # whose files have been partly deleted: the exe can still be the current
+        # one while its DLLs are gone. Running --self-test is the only check that
+        # actually exercises the bundle, and it is also the check that catches a
+        # missing Tk runtime, which is how the packaged Tk shell silently breaks.
+        result = subprocess.run(
+            [str(exe), "--self-test"],
+            capture_output=True,
+            timeout=180,
+        )
+        stdout = result.stdout.decode("utf-8", "replace")
+        stderr = result.stderr.decode("utf-8", "replace")
+        assert result.returncode == 0, (
+            f"the packaged exe failed its own self-test (exit {result.returncode}). "
+            f"dist may be a half-deleted build — re-run build_exe.bat.\n"
+            f"stdout: {stdout[:400]}\nstderr: {stderr[:400]}"
+        )
+        # It must also agree with the constant it was stamped with.
+        assert config.APP_VERSION in stdout, stdout[:400]
+        first_line = stdout.strip().splitlines()[0] if stdout.strip() else ""
+        print(f"[8c] packaged exe runs: {first_line!r} (--self-test exit 0)")
 
 print("VERSION TEST PASSED")

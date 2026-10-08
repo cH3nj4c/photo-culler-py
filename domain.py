@@ -140,6 +140,108 @@ def build_photo_groups(
     return sorted(result, key=lambda item: item.primary.name.casefold())
 
 
+@dataclass(frozen=True)
+class FolderNode:
+    """One directory in the scanned tree, with the photos it holds.
+
+    ``rel_path`` is the path relative to the scan root, using ``/`` as the
+    separator on every platform so it can be used as a dict key and rebuilt with
+    :meth:`path_for`. It is ``""`` for the root itself.
+    """
+
+    name: str
+    rel_path: str
+    direct_count: int
+    total_count: int
+    children: tuple["FolderNode", ...] = ()
+
+    @property
+    def has_children(self) -> bool:
+        return bool(self.children)
+
+    def path_for(self, root: Path) -> Path:
+        """The absolute directory this node stands for."""
+        if not self.rel_path:
+            return Path(root)
+        return Path(root).joinpath(*self.rel_path.split("/"))
+
+    def walk(self):
+        """Yield this node and every descendant, depth first."""
+        stack = [self]
+        while stack:
+            node = stack.pop()
+            yield node
+            stack.extend(reversed(node.children))
+
+
+def build_folder_tree(root: Path, paths) -> FolderNode:
+    """Nest scanned photo paths into a directory tree rooted at *root*.
+
+    Only directories that lead to at least one photo appear, which is what makes
+    this cheap: the tree is derived from the scan result already in hand, with
+    no second directory enumeration. Intermediate directories are kept so the
+    result stays navigable, and ``direct_count`` distinguishes photos sitting in
+    a directory from those in its subtree.
+
+    Paths outside *root* are ignored rather than raising: the scanner should not
+    produce them, and a tree is not the place to discover that.
+    """
+    root = Path(root)
+    names: dict[str, str] = {"": root.name or str(root)}
+    direct: dict[str, int] = {"": 0}
+    children: dict[str, set[str]] = {"": set()}
+
+    for path in paths:
+        try:
+            relative = Path(path).parent.relative_to(root)
+        except ValueError:
+            continue
+        key = ""
+        for part in relative.parts:
+            if part in ("", "."):
+                continue
+            child_key = f"{key}/{part}" if key else part
+            names.setdefault(child_key, part)
+            direct.setdefault(child_key, 0)
+            children.setdefault(child_key, set())
+            children[key].add(child_key)
+            key = child_key
+        direct[key] += 1
+
+    # Roll the per-directory counts up into subtree totals, and assemble the
+    # nodes, deepest first. Depth must be counted with +1 for non-empty keys:
+    # `key.count("/")` alone gives 0 for both the root *and* every top-level
+    # folder, which would let a parent be processed before its own children.
+    def _depth(key: str) -> int:
+        return key.count("/") + 1 if key else 0
+
+    by_depth = sorted(direct, key=_depth, reverse=True)
+
+    totals = dict(direct)
+    for key in by_depth:
+        if not key:
+            continue
+        parent = key.rsplit("/", 1)[0] if "/" in key else ""
+        totals[parent] = totals.get(parent, 0) + totals[key]
+
+    built: dict[str, FolderNode] = {}
+    for key in by_depth:
+        ordered = sorted(children.get(key, ()), key=lambda k: names[k].casefold())
+        built[key] = FolderNode(
+            name=names[key],
+            rel_path=key,
+            direct_count=direct[key],
+            total_count=totals[key],
+            children=tuple(built[child] for child in ordered),
+        )
+    return built[""]
+
+
+def count_photo_folders(node: FolderNode) -> int:
+    """How many directories in *node*'s subtree hold photos of their own."""
+    return sum(1 for item in node.walk() if item.direct_count > 0)
+
+
 def _single_group(
     path: Path, mtime_ns: int = 0, path_id: str | None = None
 ) -> PhotoGroup:

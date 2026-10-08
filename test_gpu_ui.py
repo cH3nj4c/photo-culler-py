@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from PIL import Image  # noqa: E402
 from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QWheelEvent  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QListWidget,
@@ -452,10 +453,13 @@ stranded = [
     if not sidebar.isAncestorOf(b) and not right_side.isAncestorOf(b)
 ]
 assert not stranded, f"buttons left outside both sidebars: {stranded}"
-# The right sidebar is context-only, so it may hold the version footer but no
-# action control — otherwise the two columns stop being "actions" vs "state".
+# The right sidebar is context-only, so action controls belong on the left. It
+# may hold the version footer and the folder tree's "up one level" navigation
+# (that is folder state, not an edit action) — anything else means the columns
+# have started to blur.
 right_buttons = right_side.findChildren(QPushButton)
-assert [b.objectName() for b in right_buttons] == ["link"], [
+right_names = sorted(b.objectName() for b in right_buttons)
+assert right_names == ["link", "upButton"], [
     (b.text(), b.objectName()) for b in right_buttons
 ]
 assert window.version_button.objectName() == "link"
@@ -497,14 +501,18 @@ assert name_x >= preview_x + window._stack.width(), (
     f"folder name (x={name_x}) is not to the right of the preview column"
 )
 
-# No *action* may have drifted into the right sidebar. The version footer is
-# the one deliberate control there and is asserted separately in step 14.
+# No *action* may have drifted into the right sidebar. The version footer and
+# the folder tree's up button are the two deliberate controls there, and step 14
+# asserts them by name.
 action_buttons = [
-    b for b in right_side.findChildren(QPushButton) if b.objectName() != "link"
+    b for b in right_side.findChildren(QPushButton)
+    if b.objectName() not in ("link", "upButton")
 ]
 assert not action_buttons, (
     f"action buttons leaked into the right sidebar: {[b.text() for b in action_buttons]}"
 )
+assert right_side.isAncestorOf(window.folder_tree), "the folder tree left the panel"
+assert right_side.isAncestorOf(window.up_button)
 
 # The counter must be populated for the folder that is open, and follow the
 # keep action rather than being a static label.
@@ -518,6 +526,8 @@ assert "已保留 1" in window.folder_count_label.text(), window.folder_count_la
 window.kept = set()
 window._invalidate_visible()
 window._update_folder_count()
+assert right_side.isAncestorOf(window.folder_tree), "folder tree left the right sidebar"
+assert window.folder_tree.topLevelItemCount() >= 0, "folder tree did not initialize"
 print(f"[15] folder name + counter ({count_text.splitlines()[0]}) live in a "
       f"{right_side.width()}px right sidebar at x={right_side.x()}")
 
@@ -640,9 +650,12 @@ assert titles == ["CPU", "内存", "本程序", "GPU", "显存"], titles
 for title, label in window.resource_value_labels.items():
     assert right_side.isAncestorOf(label), f"{title} left the right sidebar"
 assert right_side.isAncestorOf(window.resource_note_label)
-# Labels only — the right sidebar still holds no action buttons except the
-# version footer, which step 14 already pins down.
-assert not [b for b in right_side.findChildren(QPushButton) if b.objectName() != "link"]
+# Labels only — step 14 already pins down which two buttons the right sidebar
+# is allowed to hold (the version footer and the folder tree's up button).
+assert not [
+    b for b in right_side.findChildren(QPushButton)
+    if b.objectName() not in ("link", "upButton")
+]
 
 assert window.system_monitor._thread is not None, "sampler was never started"
 assert window.system_monitor._thread.daemon, "sampler must not block exit"
@@ -687,10 +700,12 @@ if snapshot.gpu_percent is None:
           f"({window.resource_note_label.text()}), CPU {cpu_text}")
 else:
     assert gpu_text.endswith("%"), gpu_text
-    # Units may differ per side: _format_usage falls back to explicit units when
-    # the used figure is under 1 GB, giving e.g. "908 MB/6.0 GB 15%".
+    # Two legitimate shapes, both from _format_usage:
+    #   "1.1/6.0 GB 18%"      — shared unit, factored out
+    #   "908 MB/6.0 GB 15%"   — explicit per side, when used is under 1 GB
+    # so the first unit is optional.
     assert re.match(
-        r"^\d+(?:\.\d+)? (?:MB|GB)/\d+(?:\.\d+)? (?:MB|GB) \d+%$", vram_text
+        r"^\d+(?:\.\d+)?(?: (?:MB|GB))?/\d+(?:\.\d+)? (?:MB|GB) \d+%$", vram_text
     ), vram_text
     tip = window.resource_value_labels["GPU"].toolTip()
     assert "本程序 GPU" in tip, tip
@@ -782,7 +797,108 @@ for name, (w, h) in {
     print(f"[18] {name:<7} {w}x{h} -> drawn {run_w}x{run_h}px "
           f"(aspect {drawn_aspect:.3f} vs {w / h:.3f})")
 
-# --- 19. clean shutdown ---
+# --- 19. Explorer-style subfolder tree ---------------------------------------
+# A nested tree with an empty folder alongside populated ones, so "only folders
+# that lead to a photo appear" is actually exercised rather than assumed.
+tree_root = Path(tempfile.mkdtemp(prefix="pc_tree_"))
+tree_layout = {
+    "": 3,
+    "portraits": 5,
+    "portraits/raw": 2,
+    "landscape": 4,
+    "landscape/wide": 0,          # no photos of its own, only a child
+    "landscape/wide/deep": 6,
+    "empty_folder": 0,            # no photos anywhere below -> must not appear
+}
+for rel, count in tree_layout.items():
+    target = tree_root / rel if rel else tree_root
+    target.mkdir(parents=True, exist_ok=True)
+    for i in range(count):
+        Image.new("RGB", (120, 90), "teal").save(target / f"P_{i:03d}.jpg", quality=70)
+
+window._open_folder_path(tree_root)
+wait_for(
+    lambda: not window._scan_active and len(window.all_items) == 20,
+    timeout=30,
+    what="the nested tree scan",
+)
+
+assert right_side.isAncestorOf(window.folder_tree), "the tree left the right sidebar"
+assert right_side.isAncestorOf(window.up_button), "the up button left the right sidebar"
+assert window.folder_tree.isVisible(), "the tree is hidden for a folder that has subfolders"
+assert window.folder_tree_header.isVisible()
+
+
+def _tree_rows() -> list[tuple[str, str]]:
+    """(label, rel_path) for every visible row, depth first."""
+
+    def walk(item):
+        yield (item.text(0), item.data(0, Qt.ItemDataRole.UserRole))
+        for index in range(item.childCount()):
+            yield from walk(item.child(index))
+
+    rows = []
+    for index in range(window.folder_tree.topLevelItemCount()):
+        rows.extend(walk(window.folder_tree.topLevelItem(index)))
+    return rows
+
+
+rows = _tree_rows()
+rels = [rel for _label, rel in rows]
+top_level = [
+    window.folder_tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)
+    for i in range(window.folder_tree.topLevelItemCount())
+]
+assert top_level == ["landscape", "portraits"], top_level
+assert "empty_folder" not in rels, f"a folder with no photos must not appear: {rels}"
+# Multi-level: the grandchild is reachable through its childless parent.
+assert "landscape/wide/deep" in rels, rels
+assert "portraits/raw" in rels, rels
+# direct/total is shown only where they differ, so 4/10 tells the user some
+# photos live deeper rather than claiming 10 sit in `landscape` itself.
+labels = {rel: label for label, rel in rows}
+assert "4/10" in labels["landscape"], labels["landscape"]
+assert "5/7" in labels["portraits"], labels["portraits"]
+# `wide` has no photos of its own, so it shows the subtree total only.
+assert "6" in labels["landscape/wide"] and "/" not in labels["landscape/wide"], (
+    labels["landscape/wide"]
+)
+print(f"[19] subfolder tree: {len(rows)} rows, top-level {top_level}, "
+      f"labels {labels['landscape']!r} / {labels['portraits']!r}")
+
+# Clicking a folder row re-roots the scan at it.
+item = window.folder_tree.topLevelItem(0)
+rect = window.folder_tree.visualItemRect(item)
+QTest.mouseClick(
+    window.folder_tree.viewport(),
+    Qt.MouseButton.LeftButton,
+    Qt.KeyboardModifier.NoModifier,
+    rect.center(),
+)
+wait_for(
+    lambda: not window._scan_active and window.folder.name == "landscape",
+    timeout=30,
+    what="navigation into the clicked subfolder",
+)
+assert len(window.all_items) == 10, len(window.all_items)
+assert window.folder == tree_root / "landscape", window.folder
+# The tree re-roots too: `portraits` is no longer part of this folder.
+assert [window.folder_tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)
+        for i in range(window.folder_tree.topLevelItemCount())] == ["wide"]
+
+# And 上一级 walks back out.
+assert window.up_button.isEnabled(), "up must be available below a drive root"
+window.up_button.click()
+wait_for(
+    lambda: not window._scan_active and window.folder == tree_root,
+    timeout=30,
+    what="going up one level",
+)
+assert len(window.all_items) == 20, len(window.all_items)
+print(f"[19] click navigates into landscape (10 photos) and 上一级 returns "
+      f"to the root (20 photos)")
+
+# --- 20. clean shutdown ---
 _restore_accel_settings()
 assert gpu_accel.current_scheme_id() == (
     json.loads(_accel_saved)["accel_scheme"] if _accel_saved else "auto"

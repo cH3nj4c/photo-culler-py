@@ -105,6 +105,17 @@ The right sidebar's 资源 section shows five readings, refreshed about once a s
 
 Hovering any row reveals this app's CPU (as a share of the machine), per-adapter GPU utilisation, and this app's own GPU and VRAM usage. Adapters are matched by DXGI's LUID, so the tooltip names real cards rather than showing hex identifiers.
 
+### Subfolder tree (an Explorer-style navigation pane)
+
+Below 当前文件夹 sits a **subfolder tree**:
+
+- **Only folders containing photos are listed.** Empty ones take no row; intermediate directories (no photos of their own, but photos below) are kept, otherwise a deep folder would be unreachable.
+- Each row carries its count: `landscape  4/10` reads as "4 photos here, 10 including subfolders". A single number is shown when the two agree.
+- **Click a folder to enter it** — it becomes the new scan root and the tree re-roots with it. Clicking the arrow only expands/collapses; it does not navigate.
+- "↑ 上一级" goes back to the parent, and is disabled once you are at a drive root.
+- The first level is expanded by default; the tree is sized to its content and scrolls internally past the cap.
+- The tree is for browsing and navigation only — it does **not** create, rename or delete folders.
+
 Sampling runs on a **background thread** — both GPU counters and CPU need two collections about a second apart before they can produce a rate — and the UI only touches its labels when a new reading lands. On a machine without GPU performance counters (a VM, a trimmed-down install) the GPU and VRAM rows show "—" with the reason underneath: **"—" means "cannot measure", which is not the same as "0%"**. CPU comes from `GetSystemTimes`, so it keeps working there.
 
 ## Usage
@@ -187,6 +198,7 @@ PhotoCuller-source/
 ├── test_gpu_ui.py         # GPU shell end-to-end smoke test
 ├── test_version.py        # Version chain (reads the resource back from the built exe)
 ├── test_sysmon.py         # Resource sampling (formatting, degradation, LUID parsing, thread)
+├── test_domain.py         # Domain logic (subfolder tree)
 ├── test_gpu_accel.py      # GPU detection / scheme tests (classification, merge, settings, registry)
 ├── test_entry_dispatch.py # Entry dispatch / fallback behaviour
 ├── test_smoke.py          # Tk shell smoke test
@@ -243,7 +255,8 @@ Chinese implementation notes: [Photo Culler-实现说明.md](Photo%20Culler-%E5%
 ```bash
 python app.py --self-test        # runtime self-check: version first, real Tk root, GPU deps, live adapter + resource probe
 python test_repo_hygiene.py      # repo hygiene: no committed conflict markers, no unmerged index entries, every .py parses
-python test_version.py           # version chain: constant → resource → specs → actually stamped into the built exe
+python test_domain.py            # domain logic: subfolder tree counts / ordering / intermediate nodes (no GUI needed)
+python test_version.py           # version chain: constant → resource → specs → actually stamped into the built exe, then runs --self-test on it
 python test_sysmon.py            # resource sampling: formatting, "—" degradation, LUID parsing, sampler lifecycle
 python test_gpu_ui.py            # GPU shell end to end (scan/nav/GPU zoom/full-res/filter/delete/export/layout/accel menu)
 python test_gpu_accel.py         # GPU detection + schemes (classification, source merge, settings, reversible registry)

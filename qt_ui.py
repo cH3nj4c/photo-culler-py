@@ -53,6 +53,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -72,6 +74,7 @@ from config import (
 )
 from domain import (
     PhotoGroup,
+    build_folder_tree,
     build_photo_groups,
     filter_visible_items,
     next_pair_mode,
@@ -103,6 +106,13 @@ STRIP_NAME_GAP = 8
 # right edge, so the left column stays a pure action menu.
 SIDEBAR_WIDTH = 172
 SIDEBAR_RIGHT_WIDTH = 196
+# The subfolder tree scrolls internally rather than growing without bound: the
+# right sidebar also carries the resource readouts and 加速 below it, and a
+# deep tree would otherwise push those off the bottom.
+FOLDER_TREE_MAX_HEIGHT = 190
+# Folder names are truncated with an ellipsis rather than wrapped — a tree row
+# that wraps would break the uniform row height alignment.
+FOLDER_TREE_NAME_MAX = 22
 HINT_TEXT = (
     "← → 切换    Space 保留    Del 删除    F 模式    "
     "滚轮缩放    Z 适合 / 100%    Esc 取消导出    点击查看全部快捷键（F1）"
@@ -149,6 +159,24 @@ QPushButton#link:hover { color: #4f9cff; }
 QListWidget { background: #1C2027; border: none; outline: none; }
 QListWidget::item { border: 1px solid transparent; border-radius: 8px; padding: 1px; }
 QListWidget::item:selected { border: 1px solid #4f9cff; background: #15171B; }
+/* Subfolder tree in the right sidebar. Kept tight: the sidebar is 196px wide,
+   so the rows use a smaller font than the rest of the panel and the branch
+   arrows are narrow, leaving room for the longest folder name. */
+QTreeWidget#folderTree {
+    background: #1C2027; border: none; outline: none;
+    font-size: 8pt; color: #c9ced7;
+}
+QTreeWidget#folderTree::item { padding: 2px 1px; border-radius: 4px; }
+QTreeWidget#folderTree::item:hover { background: #262b34; color: #e7e9ed; }
+QTreeWidget#folderTree::item:selected { background: #2b3546; color: #8bc4ff; }
+QTreeWidget#folderTree::branch { background: transparent; }
+/* "Up one level" — a quiet full-width row, not a primary action. */
+QPushButton#upButton {
+    background: #232831; border: 1px solid #333b47; border-radius: 6px;
+    padding: 3px 6px; text-align: left; font-size: 9pt; color: #c9ced7;
+}
+QPushButton#upButton:hover:enabled { border-color: #4f9cff; color: #e7e9ed; }
+QPushButton#upButton:disabled { color: #5A616C; border-color: #2A303A; }
 QStatusBar { background: #171A1F; }
 QMenu { background: #2a2f38; color: #e7e9ed; border: 1px solid #3a4250; }
 QMenu::item { padding: 6px 24px; }
@@ -423,6 +451,53 @@ class PhotoCullerWindow(QMainWindow):
         self.folder_count_label = QLabel("")
         self.folder_count_label.setObjectName("metaDim")
         sider.addWidget(self.folder_count_label)
+
+        # Up one level, like Explorer's toolbar button. Re-roots the scan at the
+        # parent directory; disabled where there is no parent (a drive root).
+        self.up_button = QPushButton("↑  上一级")
+        self.up_button.setObjectName("upButton")
+        self.up_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.up_button.setToolTip("打开上级文件夹")
+        self.up_button.clicked.connect(self._go_up_one_level)
+        self.up_button.setEnabled(False)
+        sider.addWidget(self.up_button)
+
+        # Subfolder tree, the Explorer-style navigation pane. Only folders that
+        # contain photos (or lead to one) appear, so an empty directory never
+        # takes a row; each row carries the photo count for that subtree.
+        self.folder_tree_header = QLabel("子文件夹")
+        self.folder_tree_header.setObjectName("section")
+        sider.addWidget(self.folder_tree_header)
+
+        self.folder_tree = QTreeWidget()
+        self.folder_tree.setObjectName("folderTree")
+        self.folder_tree.setHeaderHidden(True)
+        self.folder_tree.setColumnCount(1)
+        self.folder_tree.setUniformRowHeights(True)
+        self.folder_tree.setRootIsDecorated(True)
+        self.folder_tree.setIndentation(11)
+        self.folder_tree.setExpandsOnDoubleClick(True)
+        self.folder_tree.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.folder_tree.setMinimumHeight(0)
+        self.folder_tree.setMaximumHeight(FOLDER_TREE_MAX_HEIGHT)
+        self.folder_tree.setToolTip(
+            "点击文件夹即可进入\n点箭头展开/折叠子文件夹"
+        )
+        self.folder_tree.itemClicked.connect(self._on_folder_tree_clicked)
+        # Expanding or collapsing changes how many rows are on screen, so the
+        # snug height has to be recomputed rather than set once.
+        self.folder_tree.itemExpanded.connect(lambda _item: self._fit_folder_tree_height())
+        self.folder_tree.itemCollapsed.connect(lambda _item: self._fit_folder_tree_height())
+        sider.addWidget(self.folder_tree)
+
+        self.folder_tree_empty = QLabel("")
+        self.folder_tree_empty.setObjectName("metaDim")
+        self.folder_tree_empty.setWordWrap(True)
+        sider.addWidget(self.folder_tree_empty)
+        # Hidden until a folder is open and the tree turns out to be empty.
+        self._set_folder_tree_visible(False)
 
         sider.addStretch(1)
 
@@ -949,6 +1024,147 @@ class PhotoCullerWindow(QMainWindow):
             return
         self._open_folder_path(Path(chosen))
 
+    # --- subfolder tree ----------------------------------------------------
+
+    def _set_folder_tree_visible(self, visible: bool) -> None:
+        self.folder_tree_header.setVisible(visible)
+        self.folder_tree.setVisible(visible)
+
+    def _visible_tree_rows(self) -> int:
+        """Rows currently on screen: every top-level item plus any expanded below."""
+
+        def count(item) -> int:
+            total = 1
+            if item.isExpanded():
+                for index in range(item.childCount()):
+                    total += count(item.child(index))
+            return total
+
+        return sum(
+            count(self.folder_tree.topLevelItem(index))
+            for index in range(self.folder_tree.topLevelItemCount())
+        )
+
+    def _fit_folder_tree_height(self) -> None:
+        """Shrink the tree to its content, up to the cap.
+
+        A QTreeWidget's default size hint is far taller than a few rows, which in
+        a narrow sidebar leaves a block of dead space between the tree and the
+        resource readouts below it. Sizing to the rows actually showing keeps the
+        panel snug; past the cap it scrolls internally instead.
+        """
+        row_height = self.folder_tree.sizeHintForRow(0)
+        if row_height <= 0:
+            return
+        rows = self._visible_tree_rows()
+        needed = rows * row_height + 2 * self.folder_tree.frameWidth() + 2
+        self.folder_tree.setFixedHeight(
+            max(
+                row_height + 4,
+                min(FOLDER_TREE_MAX_HEIGHT, needed),
+            )
+        )
+
+    def _clear_folder_tree(self, message: str = "") -> None:
+        self.folder_tree.clear()
+        self.folder_tree_empty.setText(message)
+        self.folder_tree_empty.setVisible(bool(message))
+        if message:
+            self._set_folder_tree_visible(False)
+
+    def _populate_folder_tree(self, node) -> None:
+        """Render the scanned folder tree into the sidebar.
+
+        The root itself is not shown — the current folder is already named
+        directly above — so only its subfolders become top-level rows. A node
+        showing ``direct`` fewer photos than its total means some live deeper.
+        """
+        self.folder_tree.clear()
+        if node is None or not node.has_children:
+            self.folder_tree_empty.setText("这个文件夹下没有含照片的子文件夹")
+            self.folder_tree_empty.setVisible(True)
+            self._set_folder_tree_visible(False)
+            return
+
+        self.folder_tree_empty.setVisible(False)
+        self._set_folder_tree_visible(True)
+
+        def add(parent_item, child) -> None:
+            label = child.name
+            if len(label) > FOLDER_TREE_NAME_MAX:
+                label = label[: FOLDER_TREE_NAME_MAX - 1] + "…"
+            # Direct count when it differs from the subtree total, so a folder
+            # with 3 photos here and 40 below does not look like 40 here.
+            if child.direct_count and child.direct_count != child.total_count:
+                text = f"{label}   {child.direct_count}/{child.total_count}"
+            else:
+                text = f"{label}   {child.total_count}"
+            item = QTreeWidgetItem([text])
+            item.setData(0, Qt.ItemDataRole.UserRole, child.rel_path)
+            item.setToolTip(
+                0,
+                f"{child.name}\n"
+                f"本目录 {child.direct_count} 张 · 含子目录共 {child.total_count} 张\n"
+                f"双击 / 单击进入",
+            )
+            if parent_item is None:
+                self.folder_tree.addTopLevelItem(item)
+            else:
+                parent_item.addChild(item)
+            for grandchild in child.children:
+                add(item, grandchild)
+            # Outline only what exists: a childless node must not offer an arrow.
+            item.setChildIndicatorPolicy(
+                QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+                if child.has_children
+                else QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator
+            )
+
+        for child in node.children:
+            add(None, child)
+        # Open the first level so the immediate subfolders are readable without
+        # a click, matching how Explorer expands the current branch.
+        self.folder_tree.expandToDepth(0)
+        self._fit_folder_tree_height()
+
+    def _on_folder_tree_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        """Open the clicked subfolder as the new scan root.
+
+        No guard is needed to tell a row click from an expand-arrow click: Qt
+        routes the arrow to `itemExpanded` and does not emit `itemClicked` for
+        it (verified — the branch area sits left of `visualItemRect`). So a
+        click reaching here is always a click on the label.
+        """
+        rel_path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not rel_path or self.folder is None:
+            return
+        target = Path(self.folder).joinpath(*str(rel_path).split("/"))
+        if target == self.folder:
+            return
+        self._open_folder_path(target)
+
+    def _go_up_one_level(self) -> None:
+        parent = self._parent_folder()
+        if parent is not None:
+            self._open_folder_path(parent)
+
+    def _parent_folder(self) -> Path | None:
+        """The parent directory, or None at a drive root (which has none)."""
+        if self.folder is None:
+            return None
+        current = Path(self.folder)
+        parent = current.parent
+        if parent == current:
+            return None
+        return parent
+
+    def _update_folder_tree_chrome(self) -> None:
+        parent = self._parent_folder()
+        self.up_button.setEnabled(parent is not None)
+        self.up_button.setToolTip(
+            f"打开上级文件夹\n{parent}" if parent is not None else "已经是顶层目录"
+        )
+
     def _open_folder_path(self, folder: Path) -> None:
         # Cancel any in-flight tree walk from a previous folder choice.
         self._scan_cancel = True
@@ -960,6 +1176,10 @@ class PhotoCullerWindow(QMainWindow):
         self.folder_label.setText(name)
         self.folder_label.setToolTip(str(folder))
         self.folder_count_label.setText("正在扫描…")
+        # The tree describes the folder being opened, so it is cleared straight
+        # away rather than left showing the previous folder's structure.
+        self._clear_folder_tree("正在扫描…")
+        self._update_folder_tree_chrome()
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — {name}")
         self.all_items = []
         self.index = 0
@@ -999,16 +1219,21 @@ class PhotoCullerWindow(QMainWindow):
                 # still costs ~1 s. The scanner has already walked every
                 # directory by now, so this is the natural place for it.
                 groups: list[PhotoGroup] | None = None
+                tree = None
                 if not should_cancel():
                     mtimes = {str(path): mtime for path, mtime in entries}
                     groups = build_photo_groups(
                         [path for path, _mtime in entries], mtimes
                     )
+                    # Same reasoning as the grouping above: walk the entries here
+                    # rather than on the UI thread, so a folder holding tens of
+                    # thousands of photos cannot stall a frame.
+                    tree = build_folder_tree(folder, [p for p, _m in entries])
                 self._scan_events.put(
-                    (generation, "done", entries, dirs_visited, errors, None, groups)
+                    (generation, "done", entries, dirs_visited, errors, None, groups, tree)
                 )
             except Exception as exc:  # pragma: no cover - scan crash guard
-                self._scan_events.put((generation, "done", [], 0, 0, exc, None))
+                self._scan_events.put((generation, "done", [], 0, 0, exc, None, None))
 
         Thread(target=work, name="photo-culler-scan", daemon=True).start()
 
@@ -1056,10 +1281,11 @@ class PhotoCullerWindow(QMainWindow):
         if terminal is None:
             return
 
-        generation, _kind, entries, dirs_visited, errors, error, groups = terminal
+        generation, _kind, entries, dirs_visited, errors, error, groups, tree = terminal
         self._scan_active = False
         folder = self._pending_scan_folder or self.folder
         if error is not None or folder is None:
+            self._clear_folder_tree("无法读取这个文件夹")
             QMessageBox.critical(self, APP_NAME, f"无法读取这个文件夹：\n{error}")
             return
 
@@ -1069,6 +1295,11 @@ class PhotoCullerWindow(QMainWindow):
             groups = build_photo_groups(
                 [path for path, _mtime in entries], mtime_ns_by_path
             )
+        if tree is None:
+            # Same fallback as the grouping above.
+            tree = build_folder_tree(folder, [path for path, _mtime in entries])
+        self._populate_folder_tree(tree)
+        self._update_folder_tree_chrome()
         self.all_items = groups
         self.index = 0
         self._invalidate_visible()
