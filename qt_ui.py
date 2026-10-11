@@ -570,7 +570,7 @@ class PhotoCullerWindow(QMainWindow):
 
         # Preview stage + empty-state page.
         self.stage = PhotoStage()
-        self._empty_label = QLabel("打开一个照片文件夹开始选片")
+        self._empty_label = QLabel("欢迎回家\n\n打开一个照片文件夹开始选片")
         self._empty_label.setObjectName("empty")
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._stack = QWidget()

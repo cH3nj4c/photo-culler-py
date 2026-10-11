@@ -267,10 +267,12 @@ class PhotoCuller(tk.Tk):
             self.preview_frame, bg="#0E1014", highlightthickness=0, cursor="arrow"
         )
         self.preview_canvas.pack(fill="both", expand=True)
-        self.preview_canvas.create_text(
-            0, 0,
-            text="打开一个照片文件夹开始选片",
+        self._welcome_message_item = self.preview_canvas.create_text(
+            0,
+            0,
+            text="欢迎回家\n\n打开一个照片文件夹开始选片",
             fill="#E8EAED", font=("Segoe UI", 16), tags="preview-message",
+            anchor="center",
         )
         self.preview_canvas.bind("<Configure>", self._queue_preview_resize)
         self.preview_canvas.bind("<MouseWheel>", self._preview_mouse_wheel)
@@ -522,6 +524,7 @@ class PhotoCuller(tk.Tk):
             self.preview_canvas.delete("all")
         except tk.TclError:
             pass
+        self._welcome_message_item = None
 
     def open_folder(self) -> None:
         chosen = filedialog.askdirectory(
@@ -994,6 +997,7 @@ class PhotoCuller(tk.Tk):
                 if item_id != self.preview_image_item:
                     self.preview_canvas.delete(item_id)
         self.preview_canvas.delete("preview-message")
+        self._welcome_message_item = None
 
         target_x = round(geometry.origin[0])
         target_y = round(geometry.origin[1])
@@ -1247,6 +1251,7 @@ class PhotoCuller(tk.Tk):
         self._drag_state = None
         self._proxy_pil = None
         self.preview_canvas.delete("all")
+        self._welcome_message_item = None
         if not message:
             self.preview_canvas.configure(cursor="arrow")
             self.zoom_label.configure(text="—")
@@ -1732,7 +1737,11 @@ class PhotoCuller(tk.Tk):
             or bottom < canvas_height + safety
         )
 
-    def _queue_preview_resize(self, _event):
+    def _queue_preview_resize(self, event):
+        if self._welcome_message_item is not None:
+            self.preview_canvas.coords(
+                self._welcome_message_item, event.width / 2, event.height / 2
+            )
         if self._resize_job is not None:
             self.after_cancel(self._resize_job)
         self._resize_job = self.after(RESIZE_DEBOUNCE_MS, self._refresh_after_resize)
