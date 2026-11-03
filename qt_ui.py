@@ -348,7 +348,7 @@ class PhotoCullerWindow(QMainWindow):
         self._full_apply_timer = QTimer(self)
         self._full_apply_timer.setSingleShot(True)
         self._full_apply_timer.timeout.connect(self._apply_ready_full)
-        QTimer.singleShot(250, self._auto_open)
+        QTimer.singleShot(250, self._greet_then_auto_open)
 
     # --- layout / chrome -------------------------------------------------
 
@@ -961,6 +961,15 @@ class PhotoCullerWindow(QMainWindow):
             pass
         self.system_monitor.start()
         self._update_resource_panel()
+
+    def _greet_then_auto_open(self) -> None:
+        """Welcome popup, then the automatic folder picker.
+
+        Shown in this order so the two startup dialogs never stack: the folder
+        picker has to wait for the popup to be dismissed.
+        """
+        QMessageBox.information(self, APP_NAME, "主人，欢迎回家喵")
+        self._auto_open()
 
     def _auto_open(self) -> None:
         if self.auto_open_enabled:

@@ -144,7 +144,7 @@ class PhotoCuller(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Configure>", self._on_window_configure, add="+")
         self._poll_job = self.after(PREVIEW_POLL_MS, self._poll_services)
-        self.after(250, self.open_folder)
+        self.after(250, self._greet_then_open)
 
     def _on_window_configure(self, _event=None) -> None:
         if self.folder is None:
@@ -525,6 +525,15 @@ class PhotoCuller(tk.Tk):
         except tk.TclError:
             pass
         self._welcome_message_item = None
+
+    def _greet_then_open(self) -> None:
+        """Welcome popup, then the automatic folder picker.
+
+        Shown in this order so the two startup dialogs never stack: the folder
+        picker has to wait for the popup to be dismissed.
+        """
+        messagebox.showinfo(APP_NAME, "主人，欢迎回家喵", parent=self)
+        self.open_folder()
 
     def open_folder(self) -> None:
         chosen = filedialog.askdirectory(
